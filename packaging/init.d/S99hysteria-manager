@@ -1,14 +1,70 @@
 #!/bin/sh
 
+export PATH="/bin:/sbin:/usr/bin:/usr/sbin:/opt/bin:/opt/sbin:$PATH"
+
 ENABLED=yes
 PROCS=hysteria-manager
-ARGS=""
+DESC="Hysteria Manager"
+BIN="/opt/bin/hysteria-manager"
+PID_FILE="/opt/var/run/hysteria-manager.pid"
+DATA_DIR="/opt/etc/hysteria-manager"
+
+[ -x "$BIN" ] || exit 0
+
+mkdir -p /opt/var/run /opt/var/log/hysteria-manager "$DATA_DIR/profiles"
 
 start() {
-    mkdir -p /opt/etc/hysteria-manager/profiles /opt/var/log/hysteria-manager
-    /opt/bin/hysteria-manager >/dev/null 2>&1 &
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            echo "$DESC already running (PID $pid)"
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+
+    echo "Starting $DESC..."
+    HM_BASE_DIR="$DATA_DIR" start-stop-daemon -S -b -m -p "$PID_FILE" -x "$BIN"
 }
 
 stop() {
-    killall hysteria-manager 2>/dev/null || true
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            echo "Stopping $DESC..."
+            kill "$pid" 2>/dev/null
+            sleep 1
+            [ -d "/proc/$pid" ] && kill -9 "$pid" 2>/dev/null
+        fi
+        rm -f "$PID_FILE"
+    fi
 }
+
+restart() {
+    stop
+    sleep 1
+    start
+}
+
+status() {
+    if [ -f "$PID_FILE" ]; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            echo "$DESC running (PID $pid)"
+            return 0
+        fi
+    fi
+    echo "$DESC not running"
+    return 1
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) restart ;;
+    status)  status ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac

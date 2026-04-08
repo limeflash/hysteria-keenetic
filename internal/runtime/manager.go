@@ -42,17 +42,12 @@ func NewManager(binaryPath, configPath, logPath string, logger *logs.Logger, onU
 	}
 }
 
-func (m *Manager) Activate(_ context.Context, profile Profile, subscriptionURL string) (state.RuntimeStatus, error) {
+func (m *Manager) Activate(_ context.Context, profile Profile) (state.RuntimeStatus, error) {
 	if err := EnsureBinary(m.binaryPath); err != nil {
 		return state.RuntimeStatus{}, fmt.Errorf("hysteria binary is unavailable: %w", err)
 	}
 
-	routePlan, err := BuildRoutePlan(subscriptionURL, profile.Server)
-	if err != nil {
-		return state.RuntimeStatus{}, fmt.Errorf("failed to build route plan: %w", err)
-	}
-
-	configContent := BuildClientConfig(profile, routePlan)
+	configContent := BuildClientConfig(profile)
 	if err := os.MkdirAll(filepath.Dir(m.configPath), 0o755); err != nil {
 		return state.RuntimeStatus{}, err
 	}

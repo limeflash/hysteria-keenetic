@@ -36,6 +36,7 @@ type App struct {
 	remna      *remnawave.Client
 	runtime    *runtime.Manager
 	auth       *keenetic.AuthClient
+	ndmc       *keenetic.NDMCClient
 	httpServer *http.Server
 	sessions   map[string]sessionInfo
 	mu         sync.Mutex
@@ -100,6 +101,7 @@ func New(cfg Config) (*App, error) {
 		logger:   logger,
 		store:    store,
 		auth:     keenetic.NewAuthClient(cfg.KeeneticBaseURL),
+		ndmc:     keenetic.NewNDMCClient("ndmc"),
 		sessions: make(map[string]sessionInfo),
 	}
 
@@ -432,8 +434,11 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 		}
 	}
 
-	if err := a.syncProfileConfigs(next.Subscription.URL, next.Tunnels); err != nil {
+	if err := a.syncProfileConfigs(next.Tunnels); err != nil {
 		a.logger.Printf("failed to sync profile configs: %v", err)
+	}
+	if err := a.syncNDMSProfiles(ctx, next.Tunnels); err != nil {
+		a.logger.Printf("failed to sync NDMS profiles: %v", err)
 	}
 
 	return next, nil
@@ -458,6 +463,14 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		return state.AppState{}, errors.New("cannot activate a tunnel that is missing from the latest subscription refresh")
 	}
 
+	prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.syncTunnelToNDMS(prepareCtx, *selected, false); err != nil {
+		a.logger.Printf("failed to precreate NDMS tunnel %s: %v", selected.InterfaceName, err)
+	} else if err := a.ndmc.Save(prepareCtx); err != nil {
+		a.logger.Printf("failed to save NDMS config for %s: %v", selected.InterfaceName, err)
+	}
+	prepareCancel()
+
 	status, err := a.runtime.Activate(ctx, runtime.Profile{
 		Name:          selected.Name,
 		InterfaceName: selected.InterfaceName,
@@ -466,7 +479,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		Auth:          selected.Auth,
 		SNI:           selected.SNI,
 		ALPN:          append([]string{}, selected.ALPN...),
-	}, current.Subscription.URL)
+	})
 	if err != nil {
 		updated, saveErr := a.store.Update(func(st *state.AppState) error {
 			st.Runtime.State = "error"
@@ -484,6 +497,14 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		}
 		return updated, err
 	}
+
+	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.syncTunnelToNDMS(activateCtx, *selected, true); err != nil {
+		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", selected.InterfaceName, err)
+	} else if err := a.ndmc.Save(activateCtx); err != nil {
+		a.logger.Printf("failed to save active NDMS config for %s: %v", selected.InterfaceName, err)
+	}
+	activateCancel()
 
 	next, err := a.store.Update(func(st *state.AppState) error {
 		status.ActiveTunnelID = tunnelID
@@ -589,7 +610,7 @@ func (a *App) ensureFilesystem() error {
 	return nil
 }
 
-func (a *App) syncProfileConfigs(subscriptionURL string, tunnels []state.TunnelProfile) error {
+func (a *App) syncProfileConfigs(tunnels []state.TunnelProfile) error {
 	if err := os.MkdirAll(a.cfg.ProfilesDir, 0o755); err != nil {
 		return err
 	}
@@ -597,11 +618,6 @@ func (a *App) syncProfileConfigs(subscriptionURL string, tunnels []state.TunnelP
 	for _, tunnel := range tunnels {
 		if tunnel.Missing {
 			continue
-		}
-
-		routePlan, err := runtime.BuildRoutePlan(subscriptionURL, tunnel.Server)
-		if err != nil {
-			return err
 		}
 
 		content := runtime.BuildClientConfig(runtime.Profile{
@@ -612,7 +628,7 @@ func (a *App) syncProfileConfigs(subscriptionURL string, tunnels []state.TunnelP
 			Auth:          tunnel.Auth,
 			SNI:           tunnel.SNI,
 			ALPN:          append([]string{}, tunnel.ALPN...),
-		}, routePlan)
+		})
 
 		path := filepath.Join(a.cfg.ProfilesDir, tunnel.ID+".yaml")
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -621,6 +637,39 @@ func (a *App) syncProfileConfigs(subscriptionURL string, tunnels []state.TunnelP
 	}
 
 	return nil
+}
+
+func (a *App) syncNDMSProfiles(ctx context.Context, tunnels []state.TunnelProfile) error {
+	var errs []error
+	synced := false
+	for _, tunnel := range tunnels {
+		if tunnel.Missing {
+			continue
+		}
+		if err := a.syncTunnelToNDMS(ctx, tunnel, tunnel.Active); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", tunnel.InterfaceName, err))
+			continue
+		}
+		synced = true
+	}
+	if synced {
+		if err := a.ndmc.Save(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *App) syncTunnelToNDMS(ctx context.Context, tunnel state.TunnelProfile, enabled bool) error {
+	tun := runtime.DefaultTunSettings(tunnel.InterfaceName)
+	return a.ndmc.SyncOpkgTun(ctx, keenetic.OpkgTunConfig{
+		InterfaceName: tunnel.InterfaceName,
+		Description:   tunnel.Name,
+		IPv4CIDR:      tun.IPv4CIDR,
+		IPv6CIDR:      tun.IPv6CIDR,
+		MTU:           tun.MTU,
+		Enabled:       enabled,
+	})
 }
 
 func mergeProfiles(existing []state.TunnelProfile, fresh []remnawave.Profile, now string) []state.TunnelProfile {

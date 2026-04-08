@@ -6,14 +6,13 @@ import (
 	neturl "net/url"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 const (
-	defaultTunIPv4Address = "100.100.100.101/30"
-	defaultTunIPv6Address = "2001::ffff:ffff:ffff:fff1/126"
-	defaultTunTimeout     = "2m"
-	defaultTunMTU         = 1400
+	defaultTunTimeout = "2m"
+	defaultTunMTU     = 1400
 )
 
 type Profile struct {
@@ -31,7 +30,16 @@ type RoutePlan struct {
 	IPv6Excludes []string
 }
 
-func BuildClientConfig(profile Profile, routePlan RoutePlan) string {
+type TunSettings struct {
+	IPv4CIDR string
+	IPv6CIDR string
+	MTU      int
+	Timeout  string
+}
+
+func BuildClientConfig(profile Profile) string {
+	tun := DefaultTunSettings(profile.InterfaceName)
+
 	var builder strings.Builder
 
 	fmt.Fprintf(&builder, "server: %s\n\n", yamlString(fmt.Sprintf("%s:%d", profile.Server, profile.Port)))
@@ -50,26 +58,26 @@ func BuildClientConfig(profile Profile, routePlan RoutePlan) string {
 	builder.WriteString("  type: bbr\n\n")
 	builder.WriteString("tun:\n")
 	fmt.Fprintf(&builder, "  name: %s\n", yamlString(profile.InterfaceName))
-	fmt.Fprintf(&builder, "  mtu: %d\n", defaultTunMTU)
-	fmt.Fprintf(&builder, "  timeout: %s\n", defaultTunTimeout)
+	fmt.Fprintf(&builder, "  mtu: %d\n", tun.MTU)
+	fmt.Fprintf(&builder, "  timeout: %s\n", tun.Timeout)
 	builder.WriteString("  address:\n")
-	fmt.Fprintf(&builder, "    ipv4: %s\n", yamlString(defaultTunIPv4Address))
-	fmt.Fprintf(&builder, "    ipv6: %s\n", yamlString(defaultTunIPv6Address))
-	builder.WriteString("  route:\n")
-	builder.WriteString("    strict: true\n")
-	builder.WriteString("    ipv4:\n")
-	builder.WriteString("      - 0.0.0.0/0\n")
-	builder.WriteString("    ipv6:\n")
-	builder.WriteString("      - \"2000::/3\"\n")
-	builder.WriteString("    ipv4Exclude:\n")
-	for _, cidr := range routePlan.IPv4Excludes {
-		fmt.Fprintf(&builder, "      - %s\n", yamlString(cidr))
-	}
-	builder.WriteString("    ipv6Exclude:\n")
-	for _, cidr := range routePlan.IPv6Excludes {
-		fmt.Fprintf(&builder, "      - %s\n", yamlString(cidr))
-	}
+	fmt.Fprintf(&builder, "    ipv4: %s\n", yamlString(tun.IPv4CIDR))
+	fmt.Fprintf(&builder, "    ipv6: %s\n", yamlString(tun.IPv6CIDR))
 	return builder.String()
+}
+
+func DefaultTunSettings(interfaceName string) TunSettings {
+	index := interfaceIndex(interfaceName)
+	if index < 0 {
+		index = fallbackInterfaceIndex(interfaceName)
+	}
+
+	return TunSettings{
+		IPv4CIDR: fmt.Sprintf("10.250.%d.1/30", index%256),
+		IPv6CIDR: fmt.Sprintf("fd00:250:0:%x::1/126", index&0xffff),
+		MTU:      defaultTunMTU,
+		Timeout:  defaultTunTimeout,
+	}
 }
 
 func BuildRoutePlan(subscriptionURL, tunnelHost string) (RoutePlan, error) {
@@ -195,4 +203,30 @@ func sortedKeys(values map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func interfaceIndex(interfaceName string) int {
+	trimmed := strings.TrimSpace(strings.ToLower(interfaceName))
+	if !strings.HasPrefix(trimmed, "opkgtun") {
+		return -1
+	}
+
+	value := strings.TrimPrefix(trimmed, "opkgtun")
+	if value == "" {
+		return -1
+	}
+
+	index, err := strconv.Atoi(value)
+	if err != nil || index < 0 {
+		return -1
+	}
+	return index
+}
+
+func fallbackInterfaceIndex(interfaceName string) int {
+	sum := 0
+	for _, char := range interfaceName {
+		sum = (sum + int(char)) % 256
+	}
+	return sum
 }
