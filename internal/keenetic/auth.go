@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"time"
@@ -20,10 +21,12 @@ type AuthClient struct {
 }
 
 func NewAuthClient(baseURL string) *AuthClient {
+	jar, _ := cookiejar.New(nil)
 	return &AuthClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
+			Jar:     jar,
 		},
 	}
 }

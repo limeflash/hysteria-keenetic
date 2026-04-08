@@ -48,3 +48,40 @@ func TestAuthenticateChallengeFlow(t *testing.T) {
 		t.Fatalf("authenticate failed: %v", err)
 	}
 }
+
+func TestAuthenticatePreservesChallengeCookie(t *testing.T) {
+	const (
+		login     = "admin"
+		password  = "router-pass"
+		realm     = "keenetic"
+		challenge = "abcdef123456"
+		cookieVal = "challenge-session"
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			http.SetCookie(w, &http.Cookie{Name: "ndm-session", Value: cookieVal, Path: "/"})
+			w.Header().Set("X-NDM-Realm", realm)
+			w.Header().Set("X-NDM-Challenge", challenge)
+			w.WriteHeader(http.StatusUnauthorized)
+		case http.MethodPost:
+			cookie, err := r.Cookie("ndm-session")
+			if err != nil {
+				t.Fatalf("expected cookie from challenge response: %v", err)
+			}
+			if cookie.Value != cookieVal {
+				t.Fatalf("unexpected cookie value: %s", cookie.Value)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	client := NewAuthClient(server.URL)
+	if err := client.Authenticate(context.Background(), login, password); err != nil {
+		t.Fatalf("authenticate failed: %v", err)
+	}
+}
