@@ -89,6 +89,54 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 	return m.save(state)
 }
 
+func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscriptionURL string) error {
+	state, err := m.load()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	ipv4Args := routeArgs(strings.Fields(state.IPv4DefaultRoute))
+	ipv6Args := routeArgs(strings.Fields(state.IPv6DefaultRoute))
+	if len(ipv4Args) == 0 && len(ipv6Args) == 0 {
+		return nil
+	}
+
+	parsed, err := neturl.Parse(strings.TrimSpace(subscriptionURL))
+	if err != nil || parsed.Hostname() == "" {
+		return nil
+	}
+
+	ips, err := net.LookupIP(parsed.Hostname())
+	if err != nil {
+		return nil
+	}
+
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil {
+			if len(ipv4Args) == 0 {
+				continue
+			}
+			cidr := v4.String() + "/32"
+			if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, ipv4Args...)...); err != nil {
+				return err
+			}
+			continue
+		}
+		if len(ipv6Args) == 0 {
+			continue
+		}
+		cidr := ip.String() + "/128"
+		if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, ipv6Args...)...); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (m *RouteManager) Deactivate(ctx context.Context) error {
 	state, err := m.load()
 	if err != nil {

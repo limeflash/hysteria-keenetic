@@ -408,6 +408,11 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 	}
 
 	a.logger.Printf("refreshing subscription source=%s", subscriptionOrigin(current.Subscription.URL))
+	reachabilityCtx, reachabilityCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.routeMgr.EnsureSubscriptionReachable(reachabilityCtx, current.Subscription.URL); err != nil {
+		a.logger.Printf("failed to ensure subscription reachability for %s: %v", subscriptionOrigin(current.Subscription.URL), err)
+	}
+	reachabilityCancel()
 	result, err := a.remna.FetchSubscription(ctx, current.Subscription.URL, current.Subscription.HWID, current.Subscription.UserAgent, a.cfg.DefaultRefreshHours)
 	if err != nil {
 		updated, saveErr := a.store.Update(func(st *state.AppState) error {
