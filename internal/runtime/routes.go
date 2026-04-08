@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"hysteria-keenetic/internal/logs"
 )
@@ -43,6 +44,9 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 
 	if state.InterfaceName == "" {
 		return fmt.Errorf("route activation requires interface name")
+	}
+	if err := waitForInterface(ctx, state.InterfaceName); err != nil {
+		return err
 	}
 
 	hostRouteArgs4, hostRouteArgs6 := routeArgsFromDefault(state.IPv4DefaultRoute, state.IPv6DefaultRoute)
@@ -275,4 +279,21 @@ func errorsJoin(errs []error) error {
 		builder.WriteString(err.Error())
 	}
 	return fmt.Errorf("%s", builder.String())
+}
+
+func waitForInterface(ctx context.Context, interfaceName string) error {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if _, err := net.InterfaceByName(interfaceName); err == nil {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for interface %s: %w", interfaceName, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
