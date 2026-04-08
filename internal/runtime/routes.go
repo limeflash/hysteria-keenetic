@@ -1,0 +1,278 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	neturl "net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"hysteria-keenetic/internal/logs"
+)
+
+type RouteManager struct {
+	statePath string
+	logger    *logs.Logger
+}
+
+type RouteState struct {
+	InterfaceName    string   `json:"interfaceName"`
+	IPv4DefaultRoute string   `json:"ipv4DefaultRoute"`
+	IPv6DefaultRoute string   `json:"ipv6DefaultRoute"`
+	PinnedIPv4Routes []string `json:"pinnedIPv4Routes"`
+	PinnedIPv6Routes []string `json:"pinnedIPv6Routes"`
+}
+
+func NewRouteManager(statePath string, logger *logs.Logger) *RouteManager {
+	return &RouteManager{
+		statePath: statePath,
+		logger:    logger,
+	}
+}
+
+func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost, interfaceName string) error {
+	state := RouteState{
+		InterfaceName:    strings.TrimSpace(interfaceName),
+		IPv4DefaultRoute: strings.TrimSpace(runIP(ctx, false, "route", "show", "default")),
+		IPv6DefaultRoute: strings.TrimSpace(runIP(ctx, true, "route", "show", "default")),
+	}
+
+	if state.InterfaceName == "" {
+		return fmt.Errorf("route activation requires interface name")
+	}
+
+	hostRouteArgs4, hostRouteArgs6 := routeArgsFromDefault(state.IPv4DefaultRoute, state.IPv6DefaultRoute)
+	for _, cidr := range pinnedCIDRs(subscriptionURL, tunnelHost) {
+		if strings.Contains(cidr, ":") {
+			if len(hostRouteArgs6) == 0 {
+				continue
+			}
+			if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, hostRouteArgs6...)...); err != nil {
+				return err
+			}
+			state.PinnedIPv6Routes = append(state.PinnedIPv6Routes, cidr)
+			continue
+		}
+		if len(hostRouteArgs4) == 0 {
+			continue
+		}
+		if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, hostRouteArgs4...)...); err != nil {
+			return err
+		}
+		state.PinnedIPv4Routes = append(state.PinnedIPv4Routes, cidr)
+	}
+
+	if err := m.run(ctx, false, "route", "replace", "default", "dev", state.InterfaceName); err != nil {
+		return err
+	}
+	if state.IPv6DefaultRoute != "" {
+		if err := m.run(ctx, true, "route", "replace", "default", "dev", state.InterfaceName); err != nil {
+			m.logger.Printf("failed to switch ipv6 default route to %s: %v", state.InterfaceName, err)
+		}
+	}
+
+	return m.save(state)
+}
+
+func (m *RouteManager) Deactivate(ctx context.Context) error {
+	state, err := m.load()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var errs []error
+	if strings.TrimSpace(state.IPv4DefaultRoute) != "" {
+		if err := m.restoreDefaultRoute(ctx, false, state.IPv4DefaultRoute); err != nil {
+			errs = append(errs, err)
+		}
+	} else if state.InterfaceName != "" {
+		if err := m.run(ctx, false, "route", "del", "default", "dev", state.InterfaceName); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if strings.TrimSpace(state.IPv6DefaultRoute) != "" {
+		if err := m.restoreDefaultRoute(ctx, true, state.IPv6DefaultRoute); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	for _, cidr := range state.PinnedIPv4Routes {
+		if err := m.run(ctx, false, "route", "del", cidr); err != nil {
+			m.logger.Printf("failed to delete pinned ipv4 route %s: %v", cidr, err)
+		}
+	}
+	for _, cidr := range state.PinnedIPv6Routes {
+		if err := m.run(ctx, true, "route", "del", cidr); err != nil {
+			m.logger.Printf("failed to delete pinned ipv6 route %s: %v", cidr, err)
+		}
+	}
+
+	if removeErr := os.Remove(m.statePath); removeErr != nil && !os.IsNotExist(removeErr) {
+		errs = append(errs, removeErr)
+	}
+
+	return errorsJoin(errs)
+}
+
+func (m *RouteManager) save(state RouteState) error {
+	if err := os.MkdirAll(filepath.Dir(m.statePath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.statePath, data, 0o600)
+}
+
+func (m *RouteManager) load() (RouteState, error) {
+	data, err := os.ReadFile(m.statePath)
+	if err != nil {
+		return RouteState{}, err
+	}
+	var state RouteState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return RouteState{}, err
+	}
+	return state, nil
+}
+
+func (m *RouteManager) restoreDefaultRoute(ctx context.Context, ipv6 bool, routeLine string) error {
+	parts := strings.Fields(strings.TrimSpace(routeLine))
+	if len(parts) == 0 {
+		return nil
+	}
+	args := append([]string{"route", "replace"}, parts...)
+	return m.run(ctx, ipv6, args...)
+}
+
+func (m *RouteManager) run(ctx context.Context, ipv6 bool, args ...string) error {
+	fullArgs := append([]string{}, args...)
+	if ipv6 {
+		fullArgs = append([]string{"-6"}, fullArgs...)
+	}
+
+	cmd := exec.CommandContext(ctx, "ip", fullArgs...)
+	output, err := cmd.CombinedOutput()
+	trimmed := strings.TrimSpace(string(output))
+	if m.logger != nil {
+		m.logger.Printf("route cmd ip %s output=%s", strings.Join(fullArgs, " "), trimmed)
+	}
+	if err != nil {
+		if trimmed == "" {
+			return fmt.Errorf("ip %s: %w", strings.Join(fullArgs, " "), err)
+		}
+		return fmt.Errorf("ip %s: %w (%s)", strings.Join(fullArgs, " "), err, trimmed)
+	}
+	return nil
+}
+
+func runIP(ctx context.Context, ipv6 bool, args ...string) string {
+	fullArgs := append([]string{}, args...)
+	if ipv6 {
+		fullArgs = append([]string{"-6"}, fullArgs...)
+	}
+	output, err := exec.CommandContext(ctx, "ip", fullArgs...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func routeArgsFromDefault(ipv4Default, ipv6Default string) ([]string, []string) {
+	return routeArgs(strings.Fields(ipv4Default)), routeArgs(strings.Fields(ipv6Default))
+}
+
+func routeArgs(fields []string) []string {
+	if len(fields) == 0 {
+		return nil
+	}
+
+	var args []string
+	for idx := 0; idx < len(fields); idx++ {
+		switch fields[idx] {
+		case "via":
+			if idx+1 < len(fields) {
+				args = append(args, "via", fields[idx+1])
+				idx++
+			}
+		case "dev":
+			if idx+1 < len(fields) {
+				args = append(args, "dev", fields[idx+1])
+				idx++
+			}
+		}
+	}
+	return args
+}
+
+func pinnedCIDRs(subscriptionURL, tunnelHost string) []string {
+	seen := map[string]struct{}{}
+	var cidrs []string
+
+	addHost := func(host string) {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return
+		}
+		ips, err := net.LookupIP(host)
+		if err != nil {
+			return
+		}
+		for _, ip := range ips {
+			if v4 := ip.To4(); v4 != nil {
+				cidr := v4.String() + "/32"
+				if _, ok := seen[cidr]; ok {
+					continue
+				}
+				seen[cidr] = struct{}{}
+				cidrs = append(cidrs, cidr)
+				continue
+			}
+			cidr := ip.String() + "/128"
+			if _, ok := seen[cidr]; ok {
+				continue
+			}
+			seen[cidr] = struct{}{}
+			cidrs = append(cidrs, cidr)
+		}
+	}
+
+	if parsed, err := neturl.Parse(strings.TrimSpace(subscriptionURL)); err == nil {
+		addHost(parsed.Hostname())
+	}
+	addHost(tunnelHost)
+
+	return cidrs
+}
+
+func errorsJoin(errs []error) error {
+	var filtered []error
+	for _, err := range errs {
+		if err != nil {
+			filtered = append(filtered, err)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	if len(filtered) == 1 {
+		return filtered[0]
+	}
+	var builder strings.Builder
+	for idx, err := range filtered {
+		if idx > 0 {
+			builder.WriteString("; ")
+		}
+		builder.WriteString(err.Error())
+	}
+	return fmt.Errorf("%s", builder.String())
+}

@@ -25,6 +25,7 @@ type Config struct {
 	ManagerLogPath      string
 	HysteriaLogPath     string
 	RuntimeConfigPath   string
+	RouteStatePath      string
 	DefaultRefreshHours int
 }
 
@@ -45,6 +46,7 @@ func LoadConfigFromEnv() Config {
 		ManagerLogPath:      envOrDefault("HM_MANAGER_LOG", filepath.Join(logDir, "manager.log")),
 		HysteriaLogPath:     envOrDefault("HM_HYSTERIA_LOG", filepath.Join(logDir, "hysteria.log")),
 		RuntimeConfigPath:   envOrDefault("HM_RUNTIME_CONFIG", filepath.Join(baseDir, "runtime.yaml")),
+		RouteStatePath:      envOrDefault("HM_ROUTE_STATE", filepath.Join(baseDir, "routes.json")),
 		DefaultRefreshHours: 12,
 	}
 }

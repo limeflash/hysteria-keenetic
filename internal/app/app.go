@@ -37,6 +37,7 @@ type App struct {
 	store      *state.Store
 	remna      *remnawave.Client
 	runtime    *runtime.Manager
+	routeMgr   *runtime.RouteManager
 	auth       *keenetic.AuthClient
 	rci        *keenetic.RCIClient
 	httpServer *http.Server
@@ -109,6 +110,7 @@ func New(cfg Config) (*App, error) {
 
 	app.remna = remnawave.NewClient(logger)
 	app.runtime = runtime.NewManager(cfg.HysteriaBinaryPath, cfg.RuntimeConfigPath, cfg.HysteriaLogPath, logger, app.handleUnexpectedRuntimeExit)
+	app.routeMgr = runtime.NewRouteManager(cfg.RouteStatePath, logger)
 	app.httpServer = &http.Server{
 		Addr:    cfg.ListenAddress,
 		Handler: app.routes(),
@@ -121,6 +123,7 @@ func (a *App) Run() error {
 	a.logger.Printf("starting hysteria-manager on %s", a.cfg.ListenAddress)
 	go a.autoRefreshLoop()
 	go a.restoreRuntimeIfNeeded()
+	go a.cleanupNDMSOnBoot()
 	return a.httpServer.ListenAndServe()
 }
 
@@ -482,6 +485,11 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		return state.AppState{}, errors.New("cannot activate a tunnel that is missing from the latest subscription refresh")
 	}
 	a.logger.Printf("activating tunnel id=%s name=%s iface=%s server=%s:%d", selected.ID, selected.Name, selected.InterfaceName, selected.Server, selected.Port)
+	resetCtx, resetCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.routeMgr.Deactivate(resetCtx); err != nil {
+		a.logger.Printf("failed to reset previous routes before activate: %v", err)
+	}
+	resetCancel()
 	if err := a.cleanupStaleTunInterface(selected.InterfaceName); err != nil {
 		a.logger.Printf("failed to cleanup stale tun iface=%s err=%v", selected.InterfaceName, err)
 		return state.AppState{}, err
@@ -516,8 +524,31 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	}
 
 	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.syncTunnelToNDMS(activateCtx, *selected, true); err != nil {
+	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, selected.InterfaceName); err != nil {
+		a.logger.Printf("failed to switch routes for %s: %v", selected.InterfaceName, err)
+		if _, stopErr := a.runtime.Deactivate("route setup failed"); stopErr != nil {
+			a.logger.Printf("failed to stop runtime after route setup error for %s: %v", selected.InterfaceName, stopErr)
+		}
+		activateCancel()
+		updated, saveErr := a.store.Update(func(st *state.AppState) error {
+			st.Runtime.State = "error"
+			st.Runtime.ActiveTunnelID = ""
+			st.Runtime.Connected = false
+			st.Runtime.PID = 0
+			st.Runtime.LastError = err.Error()
+			for i := range st.Tunnels {
+				st.Tunnels[i].Active = false
+			}
+			return nil
+		})
+		if saveErr != nil {
+			return state.AppState{}, errors.Join(err, saveErr)
+		}
+		return updated, err
+	} else if err := a.syncTunnelToNDMS(activateCtx, *selected, true); err != nil {
 		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", selected.InterfaceName, err)
+	} else if err := a.pruneNDMSTunnels(activateCtx, current.Tunnels, selected.InterfaceName); err != nil {
+		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", selected.InterfaceName, err)
 	} else if err := a.rci.Save(activateCtx); err != nil {
 		a.logger.Printf("failed to save active NDMS config for %s: %v", selected.InterfaceName, err)
 	}
@@ -545,9 +576,18 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 	defer a.mu.Unlock()
 
 	a.logger.Printf("deactivating tunnel reason=%s", reason)
+	routeCtx, routeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	routeErr := a.routeMgr.Deactivate(routeCtx)
+	routeCancel()
+	if routeErr != nil {
+		a.logger.Printf("failed to restore routes on deactivate: %v", routeErr)
+	}
 	status, err := a.runtime.Deactivate(reason)
 	if err != nil {
 		a.logger.Printf("deactivate failed reason=%s err=%v", reason, err)
+		if routeErr != nil {
+			return state.AppState{}, errors.Join(routeErr, err)
+		}
 		return state.AppState{}, err
 	}
 
@@ -566,6 +606,16 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 		return state.AppState{}, err
 	}
 	a.logger.Printf("deactivate succeeded reason=%s", reason)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.pruneNDMSTunnels(cleanupCtx, next.Tunnels, ""); err != nil {
+		a.logger.Printf("failed to prune NDMS tunnels on deactivate: %v", err)
+	} else if err := a.rci.Save(cleanupCtx); err != nil {
+		a.logger.Printf("failed to save NDMS cleanup on deactivate: %v", err)
+	}
+	cleanupCancel()
+	if routeErr != nil {
+		return next, routeErr
+	}
 	return next, nil
 }
 
@@ -608,8 +658,37 @@ func (a *App) restoreRuntimeIfNeeded() {
 	}
 }
 
+func (a *App) cleanupNDMSOnBoot() {
+	time.Sleep(2 * time.Second)
+
+	snapshot := a.store.Snapshot()
+	keepInterface := ""
+	for _, tunnel := range snapshot.Tunnels {
+		if tunnel.ID == snapshot.Runtime.ActiveTunnelID {
+			keepInterface = tunnel.InterfaceName
+			break
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := a.pruneNDMSTunnels(ctx, snapshot.Tunnels, keepInterface); err != nil {
+		a.logger.Printf("failed to cleanup NDMS tunnels on boot: %v", err)
+		return
+	}
+	if err := a.rci.Save(ctx); err != nil {
+		a.logger.Printf("failed to save NDMS cleanup on boot: %v", err)
+	}
+}
+
 func (a *App) handleUnexpectedRuntimeExit(err error) {
 	a.logger.Printf("runtime exited unexpectedly: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if routeErr := a.routeMgr.Deactivate(ctx); routeErr != nil {
+		a.logger.Printf("failed to restore routes after runtime exit: %v", routeErr)
+	}
+	cancel()
 	_, updateErr := a.store.Update(func(st *state.AppState) error {
 		st.Runtime.State = "error"
 		st.Runtime.Connected = false
@@ -720,6 +799,27 @@ func (a *App) cleanupStaleTunInterface(interfaceName string) error {
 		return fmt.Errorf("delete %s: %w (%s)", interfaceName, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (a *App) pruneNDMSTunnels(ctx context.Context, tunnels []state.TunnelProfile, keepInterface string) error {
+	var errs []error
+	keepInterface = strings.TrimSpace(keepInterface)
+
+	for _, tunnel := range tunnels {
+		if strings.TrimSpace(tunnel.InterfaceName) == "" {
+			continue
+		}
+		if tunnel.InterfaceName == keepInterface {
+			continue
+		}
+		systemName := keenetic.RouterInterfaceName(tunnel.InterfaceName)
+		a.logger.Printf("removing inactive NDMS tunnel iface=%s system=%s", tunnel.InterfaceName, systemName)
+		if err := a.rci.DeleteInterface(ctx, systemName); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", systemName, err))
+		}
+	}
+
+	return errors.Join(errs...)
 }
 
 func mergeProfiles(existing []state.TunnelProfile, fresh []remnawave.Profile, now string) []state.TunnelProfile {

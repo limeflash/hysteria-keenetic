@@ -156,6 +156,54 @@ func (c *RCIClient) Save(ctx context.Context) error {
 	return err
 }
 
+func (c *RCIClient) DeleteInterface(ctx context.Context, systemName string) error {
+	systemName = strings.TrimSpace(systemName)
+	if systemName == "" {
+		return nil
+	}
+
+	endpoint := fmt.Sprintf("%s/rci/interface?name=%s", c.baseURL, url.QueryEscape(systemName))
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if c.logger != nil {
+		c.logger.Printf("rci delete %s status=%d response=%s", endpoint, resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("rci returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return err
+	}
+	if err := walkRCIValue(decoded); err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "unable to find") || strings.Contains(message, "not found") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func (c *RCIClient) PostBatch(ctx context.Context, payload []any) ([]map[string]any, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
