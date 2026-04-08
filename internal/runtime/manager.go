@@ -27,8 +27,9 @@ type Manager struct {
 
 type processHandle struct {
 	cmd           *exec.Cmd
-	done          chan error
+	done          chan struct{}
 	stopRequested bool
+	waitErr       error
 }
 
 func NewManager(binaryPath, configPath, logPath string, logger *logs.Logger, onUnexpectedExit func(error)) *Manager {
@@ -41,7 +42,7 @@ func NewManager(binaryPath, configPath, logPath string, logger *logs.Logger, onU
 	}
 }
 
-func (m *Manager) Activate(ctx context.Context, profile Profile, subscriptionURL string) (state.RuntimeStatus, error) {
+func (m *Manager) Activate(_ context.Context, profile Profile, subscriptionURL string) (state.RuntimeStatus, error) {
 	if err := EnsureBinary(m.binaryPath); err != nil {
 		return state.RuntimeStatus{}, fmt.Errorf("hysteria binary is unavailable: %w", err)
 	}
@@ -68,35 +69,34 @@ func (m *Manager) Activate(ctx context.Context, profile Profile, subscriptionURL
 		return state.RuntimeStatus{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, m.binaryPath, "-c", m.configPath, "-l", "info", "client")
+	cmd := exec.Command(m.binaryPath, "-c", m.configPath, "-l", "info", "client")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		return state.RuntimeStatus{}, err
 	}
 
-	done := make(chan error, 1)
+	handle := &processHandle{
+		cmd:  cmd,
+		done: make(chan struct{}),
+	}
 	go func() {
 		err := cmd.Wait()
 		_ = logFile.Close()
-		done <- err
+		handle.waitErr = err
+		close(handle.done)
 	}()
 
 	select {
-	case err := <-done:
-		m.logger.Printf("hysteria process exited during startup: %v", err)
-		return state.RuntimeStatus{}, fmt.Errorf("hysteria exited during startup: %w", err)
+	case <-handle.done:
+		m.logger.Printf("hysteria process exited during startup: %v", handle.waitErr)
+		return state.RuntimeStatus{}, fmt.Errorf("hysteria exited during startup: %w", handle.waitErr)
 	case <-time.After(2 * time.Second):
 	}
 
 	m.mu.Lock()
-	handle := &processHandle{
-		cmd:  cmd,
-		done: done,
-	}
 	m.current = handle
 	m.mu.Unlock()
 
@@ -126,14 +126,14 @@ func (m *Manager) Deactivate(reason string) (state.RuntimeStatus, error) {
 	}
 
 	m.logger.Printf("stopping hysteria process: %s", reason)
-	if err := syscall.Kill(-current.cmd.Process.Pid, syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := current.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return state.RuntimeStatus{}, err
 	}
 
 	select {
 	case <-current.done:
 	case <-time.After(5 * time.Second):
-		_ = syscall.Kill(-current.cmd.Process.Pid, syscall.SIGKILL)
+		_ = current.cmd.Process.Kill()
 		<-current.done
 	}
 
@@ -158,7 +158,8 @@ func (m *Manager) Status() state.RuntimeStatus {
 }
 
 func (m *Manager) watch(handle *processHandle) {
-	err := <-handle.done
+	<-handle.done
+	err := handle.waitErr
 
 	m.mu.Lock()
 	shouldNotify := !handle.stopRequested

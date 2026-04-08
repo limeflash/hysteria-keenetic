@@ -29,10 +29,10 @@ mkdir -p "${WORK_DIR}" "${OUT_DIR}"
 git clone --depth 1 https://github.com/apernet/hysteria "${WORK_DIR}"
 
 pushd "${WORK_DIR}" >/dev/null
-if [[ "${TARGET}" == "mips-3.4" ]]; then
+if [[ -n "${GOMIPS_MAP[$TARGET]}" ]]; then
   GOOS=linux GOARCH="${GOARCH_VALUE}" GOMIPS="${GOMIPS_MAP[$TARGET]}" python3 hyperbole.py build -r
 else
-  GOOS=linux GOARCH="${GOARCH_VALUE}" ${GOMIPS_MAP[$TARGET]:+GOMIPS=${GOMIPS_MAP[$TARGET]}} python3 hyperbole.py build -r
+  GOOS=linux GOARCH="${GOARCH_VALUE}" python3 hyperbole.py build -r
 fi
 
 cp build/hysteria-* "${OUT_DIR}/hysteria-${TARGET}"

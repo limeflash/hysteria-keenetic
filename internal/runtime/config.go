@@ -34,7 +34,7 @@ type RoutePlan struct {
 func BuildClientConfig(profile Profile, routePlan RoutePlan) string {
 	var builder strings.Builder
 
-	fmt.Fprintf(&builder, "server: %s:%d\n\n", yamlString(profile.Server), profile.Port)
+	fmt.Fprintf(&builder, "server: %s\n\n", yamlString(fmt.Sprintf("%s:%d", profile.Server, profile.Port)))
 	fmt.Fprintf(&builder, "auth: %s\n\n", yamlString(profile.Auth))
 	builder.WriteString("tls:\n")
 	fmt.Fprintf(&builder, "  sni: %s\n", yamlString(profile.SNI))
