@@ -52,9 +52,9 @@ build_manager() {
   (
     cd "${out_dir}"
     echo "2.0" > debian-binary
-    tar -czf control.tar.gz -C control .
-    tar -czf data.tar.gz -C data .
-    ar rcs "${DIST_DIR}/hysteria-manager_${entware_arch}.ipk" debian-binary control.tar.gz data.tar.gz
+    tar --numeric-owner --owner=0 --group=0 -czf control.tar.gz -C control .
+    tar --numeric-owner --owner=0 --group=0 -czf data.tar.gz -C data .
+    tar --numeric-owner --owner=0 --group=0 -czf "${DIST_DIR}/hysteria-manager_${entware_arch}.ipk" ./debian-binary ./control.tar.gz ./data.tar.gz
   )
 }
 
