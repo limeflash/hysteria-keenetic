@@ -538,7 +538,19 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	selectedCopy.InterfaceName = actualInterface
 	a.logger.Printf("activate runtime interface selected=%s actual=%s", selected.InterfaceName, actualInterface)
 
-	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Register interface with Keenetic NDMS first — this must happen even if
+	// route activation fails so the tunnel appears in the native router UI.
+	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.syncTunnelToNDMS(ndmsCtx, selectedCopy, true); err != nil {
+		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", actualInterface, err)
+	} else if err := a.pruneNDMSTunnels(ndmsCtx, current.Tunnels, actualInterface); err != nil {
+		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", actualInterface, err)
+	} else if err := a.rci.Save(ndmsCtx); err != nil {
+		a.logger.Printf("failed to save active NDMS config for %s: %v", actualInterface, err)
+	}
+	ndmsCancel()
+
+	activateCtx, activateCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, actualInterface, current.Routing); err != nil {
 		a.logger.Printf("failed to switch routes for %s: %v", actualInterface, err)
 		if _, stopErr := a.runtime.Deactivate("route setup failed"); stopErr != nil {
@@ -561,12 +573,6 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 			return state.AppState{}, errors.Join(err, saveErr)
 		}
 		return updated, err
-	} else if err := a.syncTunnelToNDMS(activateCtx, selectedCopy, true); err != nil {
-		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", actualInterface, err)
-	} else if err := a.pruneNDMSTunnels(activateCtx, current.Tunnels, actualInterface); err != nil {
-		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", actualInterface, err)
-	} else if err := a.rci.Save(activateCtx); err != nil {
-		a.logger.Printf("failed to save active NDMS config for %s: %v", actualInterface, err)
 	}
 	activateCancel()
 
