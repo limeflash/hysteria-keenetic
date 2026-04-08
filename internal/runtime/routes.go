@@ -90,16 +90,24 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 }
 
 func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscriptionURL string) error {
-	state, err := m.load()
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
+	var state RouteState
+	if loaded, err := m.load(); err == nil {
+		state = loaded
+	} else if !os.IsNotExist(err) {
 		return err
 	}
 
-	ipv4Args := routeArgs(strings.Fields(state.IPv4DefaultRoute))
-	ipv6Args := routeArgs(strings.Fields(state.IPv6DefaultRoute))
+	ipv4Base := strings.TrimSpace(state.IPv4DefaultRoute)
+	ipv6Base := strings.TrimSpace(state.IPv6DefaultRoute)
+	if ipv4Base == "" {
+		ipv4Base = strings.TrimSpace(runIP(ctx, false, "route", "show", "default"))
+	}
+	if ipv6Base == "" {
+		ipv6Base = strings.TrimSpace(runIP(ctx, true, "route", "show", "default"))
+	}
+
+	ipv4Args := routeArgs(strings.Fields(ipv4Base))
+	ipv6Args := routeArgs(strings.Fields(ipv6Base))
 	if len(ipv4Args) == 0 && len(ipv6Args) == 0 {
 		return nil
 	}
@@ -120,6 +128,9 @@ func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscrip
 				continue
 			}
 			cidr := v4.String() + "/32"
+			if m.logger != nil {
+				m.logger.Printf("ensure subscription route %s via %s", cidr, strings.Join(ipv4Args, " "))
+			}
 			if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, ipv4Args...)...); err != nil {
 				return err
 			}
@@ -129,6 +140,9 @@ func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscrip
 			continue
 		}
 		cidr := ip.String() + "/128"
+		if m.logger != nil {
+			m.logger.Printf("ensure subscription route %s via %s", cidr, strings.Join(ipv6Args, " "))
+		}
 		if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, ipv6Args...)...); err != nil {
 			return err
 		}
