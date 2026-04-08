@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/opt/bin/sh
 set -e
 
 mkdir -p /opt/etc/hysteria-manager/profiles
