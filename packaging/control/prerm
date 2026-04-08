@@ -1,0 +1,4 @@
+#!/bin/sh
+set -e
+
+/opt/etc/init.d/S99hysteria-manager stop || true

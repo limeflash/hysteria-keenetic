@@ -1,0 +1,14 @@
+#!/bin/sh
+
+ENABLED=yes
+PROCS=hysteria-manager
+ARGS=""
+
+start() {
+    mkdir -p /opt/etc/hysteria-manager/profiles /opt/var/log/hysteria-manager
+    /opt/bin/hysteria-manager >/dev/null 2>&1 &
+}
+
+stop() {
+    killall hysteria-manager 2>/dev/null || true
+}

@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+
+mkdir -p /opt/etc/hysteria-manager/profiles
+mkdir -p /opt/var/log/hysteria-manager
+chmod +x /opt/etc/init.d/S99hysteria-manager || true
+/opt/etc/init.d/S99hysteria-manager restart || true

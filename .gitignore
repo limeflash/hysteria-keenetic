@@ -1,0 +1,6 @@
+/dist/
+/build/
+/tmp/
+/bin/
+*.ipk
+*.tar.gz

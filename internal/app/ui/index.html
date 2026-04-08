@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hysteria Manager</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <div id="app">
+      <section id="login-screen" class="screen hidden">
+        <div class="login-card">
+          <div class="shield">◌</div>
+          <h1>Hysteria Manager</h1>
+          <p>Введите логин и пароль администратора Keenetic</p>
+          <form id="login-form">
+            <label>
+              Логин
+              <input id="login-input" name="login" type="text" autocomplete="username" value="admin" />
+            </label>
+            <label>
+              Пароль
+              <input id="password-input" name="password" type="password" autocomplete="current-password" />
+            </label>
+            <button type="submit">Войти</button>
+          </form>
+          <p id="login-error" class="error hidden"></p>
+        </div>
+      </section>
+
+      <section id="dashboard" class="screen hidden">
+        <header class="topbar">
+          <div>
+            <div class="brand">Hysteria Manager</div>
+            <div class="subbrand">Remnawave import for Keenetic / OpkgTun</div>
+          </div>
+          <div class="topbar-actions">
+            <span id="user-badge" class="badge"></span>
+            <button id="logout-button" class="ghost">Выйти</button>
+          </div>
+        </header>
+
+        <nav class="tabs">
+          <button class="tab active" data-tab="tunnels">Туннели</button>
+          <button class="tab" data-tab="source">Источник</button>
+          <button class="tab" data-tab="logs">Логи</button>
+        </nav>
+
+        <main>
+          <section id="panel-tunnels" class="panel active">
+            <div class="panel-header">
+              <div>
+                <h2>Туннели</h2>
+                <p>Текущие профили из Remnawave. Активный туннель поднимается как `OpkgTun` интерфейс.</p>
+              </div>
+              <div class="toolbar">
+                <button id="refresh-button" class="ghost">Обновить подписку</button>
+              </div>
+            </div>
+            <div id="runtime-banner" class="runtime-banner hidden"></div>
+            <div id="tunnels-grid" class="cards"></div>
+          </section>
+
+          <section id="panel-source" class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Источник</h2>
+                <p>Один Remnawave URL, стабильный HWID и интервал автообновления.</p>
+              </div>
+            </div>
+            <form id="source-form" class="stack">
+              <label>
+                Subscription URL
+                <input id="source-url" name="url" type="url" placeholder="https://..." />
+              </label>
+              <div class="source-meta">
+                <div class="meta-card">
+                  <span class="meta-label">HWID</span>
+                  <code id="hwid-value"></code>
+                </div>
+                <div class="meta-card">
+                  <span class="meta-label">User-Agent</span>
+                  <code id="ua-value"></code>
+                </div>
+                <div class="meta-card">
+                  <span class="meta-label">Последнее обновление</span>
+                  <span id="refresh-value">-</span>
+                </div>
+                <div class="meta-card">
+                  <span class="meta-label">Интервал</span>
+                  <span id="interval-value">-</span>
+                </div>
+              </div>
+              <button type="submit">Сохранить и импортировать</button>
+            </form>
+            <div class="error-block">
+              <span class="meta-label">Последняя ошибка</span>
+              <pre id="source-error">-</pre>
+            </div>
+          </section>
+
+          <section id="panel-logs" class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Логи</h2>
+                <p>Последние строки логов менеджера и клиента `hysteria`.</p>
+              </div>
+              <div class="toolbar">
+                <button class="ghost log-source active" data-source="manager">Manager</button>
+                <button class="ghost log-source" data-source="hysteria">Hysteria</button>
+                <button id="reload-logs-button" class="ghost">Обновить</button>
+              </div>
+            </div>
+            <pre id="logs-output" class="logs"></pre>
+          </section>
+        </main>
+      </section>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

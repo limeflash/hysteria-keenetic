@@ -1,0 +1,8 @@
+Package: hysteria-manager
+Version: @VERSION@
+Depends: libc, ca-bundle, curl
+Architecture: @ARCH@
+Maintainer: limeflash
+Section: net
+Priority: optional
+Description: Hysteria2 manager for Keenetic with Remnawave import
