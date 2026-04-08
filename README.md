@@ -14,13 +14,13 @@
 - Логин в UI с использованием учётных данных Keenetic
 - Автообновление подписки
 - API для списка туннелей, активации, деактивации, логов и статуса
-- Подготовка `OpkgTun`-профилей через `ndmc`, чтобы туннели можно было подхватить в GUI Keenetic
+- Синхронизация `OpkgTun` через локальный `RCI` (`http://127.0.0.1:79/rci`)
 
 ## Важные допущения MVP
 
 - В первой версии менеджер активирует только один туннель одновременно
 - `Hysteria` больше не забирает `default route` сама: маршрутизацией должен управлять сам Keenetic
-- Для интеграции с NDMS менеджер синхронизирует `OpkgTunN` до запуска активного туннеля
+- Для интеграции с Keenetic менеджер создаёт и обновляет `OpkgTunN` через `RCI` до запуска активного туннеля
 - По умолчанию сервис слушает `0.0.0.0:2230`, чтобы не конфликтовать с `AWG Manager` на `:2222`
 - Каталоги состояния:
   - `/opt/etc/hysteria-manager`
@@ -48,6 +48,7 @@ go test ./...
 - `HM_RUNTIME_CONFIG` — runtime YAML для активного туннеля
 - `HYSTERIA_BINARY` — путь к бинарнику `hysteria`
 - `KEENETIC_BASE_URL` — базовый адрес локального Keenetic API, по умолчанию `http://127.0.0.1`
+- `KEENETIC_RCI_URL` — локальный адрес `RCI`, по умолчанию `http://127.0.0.1:79`
 
 ## Установка через GitHub Releases
 
@@ -59,7 +60,7 @@ curl -sL https://raw.githubusercontent.com/limeflash/hysteria-keenetic/main/scri
 
 Актуальный релиз:
 
-- [v0.1.1](https://github.com/limeflash/hysteria-keenetic/releases/tag/v0.1.1)
+- [v0.1.2](https://github.com/limeflash/hysteria-keenetic/releases/tag/v0.1.2)
 
 ## Ручная установка или обновление
 
@@ -68,7 +69,7 @@ curl -sL https://raw.githubusercontent.com/limeflash/hysteria-keenetic/main/scri
 ```sh
 cd /tmp
 rm -f hysteria-manager.ipk
-wget -O hysteria-manager.ipk https://github.com/limeflash/hysteria-keenetic/releases/download/v0.1.1/hysteria-manager_aarch64-3.10.ipk
+wget -O hysteria-manager.ipk https://github.com/limeflash/hysteria-keenetic/releases/download/v0.1.2/hysteria-manager_aarch64-3.10.ipk
 /opt/bin/opkg install ./hysteria-manager.ipk
 /opt/etc/init.d/S99hysteria-manager restart
 ```

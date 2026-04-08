@@ -20,6 +20,7 @@ type Config struct {
 	ListenAddress       string
 	HysteriaBinaryPath  string
 	KeeneticBaseURL     string
+	KeeneticRCIURL      string
 	StateFilePath       string
 	ManagerLogPath      string
 	HysteriaLogPath     string
@@ -39,6 +40,7 @@ func LoadConfigFromEnv() Config {
 		ListenAddress:       envOrDefault("HM_LISTEN_ADDR", defaultListenAddress),
 		HysteriaBinaryPath:  envOrDefault("HYSTERIA_BINARY", defaultHysteriaBin),
 		KeeneticBaseURL:     envOrDefault("KEENETIC_BASE_URL", "http://127.0.0.1"),
+		KeeneticRCIURL:      envOrDefault("KEENETIC_RCI_URL", "http://127.0.0.1:79"),
 		StateFilePath:       envOrDefault("HM_STATE_FILE", filepath.Join(baseDir, "state.json")),
 		ManagerLogPath:      envOrDefault("HM_MANAGER_LOG", filepath.Join(logDir, "manager.log")),
 		HysteriaLogPath:     envOrDefault("HM_HYSTERIA_LOG", filepath.Join(logDir, "hysteria.log")),

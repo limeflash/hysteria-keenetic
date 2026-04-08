@@ -36,7 +36,7 @@ type App struct {
 	remna      *remnawave.Client
 	runtime    *runtime.Manager
 	auth       *keenetic.AuthClient
-	ndmc       *keenetic.NDMCClient
+	rci        *keenetic.RCIClient
 	httpServer *http.Server
 	sessions   map[string]sessionInfo
 	mu         sync.Mutex
@@ -101,7 +101,7 @@ func New(cfg Config) (*App, error) {
 		logger:   logger,
 		store:    store,
 		auth:     keenetic.NewAuthClient(cfg.KeeneticBaseURL),
-		ndmc:     keenetic.NewNDMCClient("ndmc"),
+		rci:      keenetic.NewRCIClient(cfg.KeeneticRCIURL, logger),
 		sessions: make(map[string]sessionInfo),
 	}
 
@@ -466,7 +466,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := a.syncTunnelToNDMS(prepareCtx, *selected, false); err != nil {
 		a.logger.Printf("failed to precreate NDMS tunnel %s: %v", selected.InterfaceName, err)
-	} else if err := a.ndmc.Save(prepareCtx); err != nil {
+	} else if err := a.rci.Save(prepareCtx); err != nil {
 		a.logger.Printf("failed to save NDMS config for %s: %v", selected.InterfaceName, err)
 	}
 	prepareCancel()
@@ -501,7 +501,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := a.syncTunnelToNDMS(activateCtx, *selected, true); err != nil {
 		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", selected.InterfaceName, err)
-	} else if err := a.ndmc.Save(activateCtx); err != nil {
+	} else if err := a.rci.Save(activateCtx); err != nil {
 		a.logger.Printf("failed to save active NDMS config for %s: %v", selected.InterfaceName, err)
 	}
 	activateCancel()
@@ -653,7 +653,7 @@ func (a *App) syncNDMSProfiles(ctx context.Context, tunnels []state.TunnelProfil
 		synced = true
 	}
 	if synced {
-		if err := a.ndmc.Save(ctx); err != nil {
+		if err := a.rci.Save(ctx); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -662,7 +662,7 @@ func (a *App) syncNDMSProfiles(ctx context.Context, tunnels []state.TunnelProfil
 
 func (a *App) syncTunnelToNDMS(ctx context.Context, tunnel state.TunnelProfile, enabled bool) error {
 	tun := runtime.DefaultTunSettings(tunnel.InterfaceName)
-	return a.ndmc.SyncOpkgTun(ctx, keenetic.OpkgTunConfig{
+	return a.rci.SyncOpkgTun(ctx, keenetic.OpkgTunConfig{
 		InterfaceName: tunnel.InterfaceName,
 		Description:   tunnel.Name,
 		IPv4CIDR:      tun.IPv4CIDR,
