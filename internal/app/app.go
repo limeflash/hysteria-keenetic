@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"os"
 	"path/filepath"
 	"sort"
@@ -457,9 +458,6 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 	if err := a.syncProfileConfigs(next.Tunnels); err != nil {
 		a.logger.Printf("failed to sync profile configs: %v", err)
 	}
-	if err := a.syncNDMSProfiles(ctx, next.Tunnels); err != nil {
-		a.logger.Printf("failed to sync NDMS profiles: %v", err)
-	}
 	a.logger.Printf("subscription refresh merged tunnels=%d source=%s", len(next.Tunnels), subscriptionOrigin(current.Subscription.URL))
 
 	return next, nil
@@ -484,14 +482,10 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		return state.AppState{}, errors.New("cannot activate a tunnel that is missing from the latest subscription refresh")
 	}
 	a.logger.Printf("activating tunnel id=%s name=%s iface=%s server=%s:%d", selected.ID, selected.Name, selected.InterfaceName, selected.Server, selected.Port)
-
-	prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.syncTunnelToNDMS(prepareCtx, *selected, false); err != nil {
-		a.logger.Printf("failed to precreate NDMS tunnel %s: %v", selected.InterfaceName, err)
-	} else if err := a.rci.Save(prepareCtx); err != nil {
-		a.logger.Printf("failed to save NDMS config for %s: %v", selected.InterfaceName, err)
+	if err := a.cleanupStaleTunInterface(selected.InterfaceName); err != nil {
+		a.logger.Printf("failed to cleanup stale tun iface=%s err=%v", selected.InterfaceName, err)
+		return state.AppState{}, err
 	}
-	prepareCancel()
 
 	status, err := a.runtime.Activate(ctx, runtime.Profile{
 		Name:          selected.Name,
@@ -709,6 +703,23 @@ func (a *App) syncTunnelToNDMS(ctx context.Context, tunnel state.TunnelProfile, 
 		MTU:           tun.MTU,
 		Enabled:       enabled,
 	})
+}
+
+func (a *App) cleanupStaleTunInterface(interfaceName string) error {
+	interfaceName = strings.TrimSpace(interfaceName)
+	if interfaceName == "" {
+		return nil
+	}
+	if _, err := net.InterfaceByName(interfaceName); err != nil {
+		return nil
+	}
+
+	a.logger.Printf("removing stale tun interface iface=%s before activation", interfaceName)
+	output, err := exec.Command("ip", "link", "delete", "dev", interfaceName).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("delete %s: %w (%s)", interfaceName, err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func mergeProfiles(existing []state.TunnelProfile, fresh []remnawave.Profile, now string) []state.TunnelProfile {

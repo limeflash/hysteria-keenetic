@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-VERSION="${VERSION:-0.1.3}"
+VERSION="${VERSION:-0.1.4}"
 GO_BIN="${GO_BIN:-go}"
 HYSTERIA_BIN_DIR="${HYSTERIA_BIN_DIR:-${DIST_DIR}/hysteria-client}"
 
