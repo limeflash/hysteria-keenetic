@@ -124,8 +124,9 @@ function renderTunnels(tunnels, runtime) {
       try {
         await api(`/api/tunnels/${tunnel.id}/activate`, { method: "POST" });
         await refreshDashboard();
+        toast(`${tunnel.name} активирован`);
       } catch (error) {
-        alert(error.message);
+        toast(error.message, true);
       } finally {
         activateButton.disabled = tunnel.missing;
       }
@@ -136,8 +137,9 @@ function renderTunnels(tunnels, runtime) {
       try {
         await api(`/api/tunnels/${tunnel.id}/deactivate`, { method: "POST" });
         await refreshDashboard();
+        toast(`${tunnel.name} выключен`);
       } catch (error) {
-        alert(error.message);
+        toast(error.message, true);
       } finally {
         deactivateButton.disabled = !tunnel.active;
       }
@@ -222,8 +224,9 @@ els.sourceForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ url: els.sourceUrl.value }),
     });
     await refreshDashboard();
+    toast("Подписка импортирована");
   } catch (error) {
-    alert(error.message);
+    toast(error.message, true);
   }
 });
 
@@ -231,8 +234,9 @@ els.refreshButton.addEventListener("click", async () => {
   try {
     await api("/api/subscription/refresh", { method: "POST" });
     await refreshDashboard();
+    toast("Подписка обновлена");
   } catch (error) {
-    alert(error.message);
+    toast(error.message, true);
   }
 });
 
@@ -255,6 +259,18 @@ document.querySelectorAll(".tab").forEach((button) => {
     document.getElementById(`panel-${button.dataset.tab}`).classList.add("active");
   });
 });
+
+function toast(message, isError = false) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isError ? " toast-err" : "");
+  el.textContent = message;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 300);
+  }, 2500);
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -391,7 +407,7 @@ document.getElementById("add-domain-group-form").addEventListener("submit", asyn
 
   const existing = routingConfig.domainGroups || [];
   if (existing.some(g => g.name === name)) {
-    alert("Группа с таким именем уже существует");
+    toast("Группа с таким именем уже существует", true);
     return;
   }
 
@@ -409,7 +425,7 @@ document.getElementById("add-static-route-form").addEventListener("submit", asyn
 
   const existing = routingConfig.staticRoutes || [];
   if (existing.some(r => r.cidr === cidr)) {
-    alert("Такой маршрут уже существует");
+    toast("Такой маршрут уже существует", true);
     return;
   }
 

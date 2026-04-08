@@ -366,6 +366,33 @@ button:disabled {
   width: 100%;
 }
 
+/* Toast notifications */
+
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(104, 211, 145, 0.95);
+  color: #11161f;
+  padding: 12px 24px;
+  border-radius: 12px;
+  font-weight: 600;
+  opacity: 0;
+  transition: opacity 0.3s, transform 0.3s;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.toast-err {
+  background: rgba(252, 129, 129, 0.95);
+}
+
 @media (max-width: 800px) {
   .topbar,
   .tabs,
