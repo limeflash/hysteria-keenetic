@@ -13,7 +13,17 @@ import (
 	"time"
 
 	"hysteria-keenetic/internal/logs"
+	"hysteria-keenetic/internal/state"
 )
+
+// RoutingStrategy abstracts how VPN traffic routing is configured.
+// "global" replaces the system default route; "selective" uses NDMS
+// FQDN groups and DNS proxy routes so only chosen domains go through VPN.
+type RoutingStrategy interface {
+	Activate(ctx context.Context, subscriptionURL, tunnelHost, interfaceName string, cfg state.RoutingConfig) error
+	Deactivate(ctx context.Context) error
+	EnsureSubscriptionReachable(ctx context.Context, subscriptionURL string) error
+}
 
 type RouteManager struct {
 	statePath string
@@ -35,17 +45,17 @@ func NewRouteManager(statePath string, logger *logs.Logger) *RouteManager {
 	}
 }
 
-func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost, interfaceName string) error {
-	state := RouteState{
+func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost, interfaceName string, _ state.RoutingConfig) error {
+	rs := RouteState{
 		InterfaceName:    strings.TrimSpace(interfaceName),
 		IPv4DefaultRoute: firstRouteLine(runIP(ctx, false, "route", "show", "default")),
 		IPv6DefaultRoute: firstRouteLine(runIP(ctx, true, "route", "show", "default")),
 	}
 
-	if state.InterfaceName == "" {
+	if rs.InterfaceName == "" {
 		return fmt.Errorf("route activation requires interface name")
 	}
-	if err := waitForInterface(ctx, state.InterfaceName); err != nil {
+	if err := waitForInterface(ctx, rs.InterfaceName); err != nil {
 		return err
 	}
 
@@ -61,7 +71,7 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 			if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
 				return err
 			}
-			state.PinnedIPv6Routes = append(state.PinnedIPv6Routes, cidr)
+			rs.PinnedIPv6Routes = append(rs.PinnedIPv6Routes, cidr)
 			continue
 		}
 		hostArgs, err := routeArgsForDestination(ctx, false, cidr)
@@ -74,19 +84,19 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 		if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
 			return err
 		}
-		state.PinnedIPv4Routes = append(state.PinnedIPv4Routes, cidr)
+		rs.PinnedIPv4Routes = append(rs.PinnedIPv4Routes, cidr)
 	}
 
-	if err := m.run(ctx, false, "route", "replace", "default", "dev", state.InterfaceName); err != nil {
+	if err := m.run(ctx, false, "route", "replace", "default", "dev", rs.InterfaceName); err != nil {
 		return err
 	}
-	if state.IPv6DefaultRoute != "" {
-		if err := m.run(ctx, true, "route", "replace", "default", "dev", state.InterfaceName); err != nil {
-			m.logger.Printf("failed to switch ipv6 default route to %s: %v", state.InterfaceName, err)
+	if rs.IPv6DefaultRoute != "" {
+		if err := m.run(ctx, true, "route", "replace", "default", "dev", rs.InterfaceName); err != nil {
+			m.logger.Printf("failed to switch ipv6 default route to %s: %v", rs.InterfaceName, err)
 		}
 	}
 
-	return m.save(state)
+	return m.save(rs)
 }
 
 func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscriptionURL string) error {

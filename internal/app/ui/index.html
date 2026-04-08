@@ -42,6 +42,7 @@
 
         <nav class="tabs">
           <button class="tab active" data-tab="tunnels">Туннели</button>
+          <button class="tab" data-tab="routing">Маршруты</button>
           <button class="tab" data-tab="source">Источник</button>
           <button class="tab" data-tab="logs">Логи</button>
         </nav>
@@ -96,6 +97,59 @@
             <div class="error-block">
               <span class="meta-label">Последняя ошибка</span>
               <pre id="source-error">-</pre>
+            </div>
+          </section>
+
+          <section id="panel-routing" class="panel">
+            <div class="panel-header">
+              <div>
+                <h2>Маршруты</h2>
+                <p>Выборочная маршрутизация: только указанные домены и IP идут через VPN.</p>
+              </div>
+            </div>
+
+            <div class="routing-mode">
+              <label class="toggle-label">
+                <span>Режим:</span>
+                <select id="routing-mode-select">
+                  <option value="selective">Селективный (только выбранные домены)</option>
+                  <option value="global">Глобальный (весь трафик через VPN)</option>
+                </select>
+              </label>
+            </div>
+
+            <div id="selective-config">
+              <h3>Группы доменов</h3>
+              <p class="hint">Домены из этих групп будут маршрутизироваться через VPN-туннель (DNS-routing через Keenetic NDMS).</p>
+              <div id="domain-groups-list" class="cards"></div>
+              <details class="add-form">
+                <summary>Добавить группу доменов</summary>
+                <form id="add-domain-group-form" class="stack">
+                  <label>
+                    Название группы
+                    <input id="dg-name" type="text" placeholder="youtube" required />
+                  </label>
+                  <label>
+                    Домены (по одному на строку)
+                    <textarea id="dg-domains" rows="5" placeholder="youtube.com&#10;googlevideo.com&#10;ytimg.com" required></textarea>
+                  </label>
+                  <button type="submit">Добавить</button>
+                </form>
+              </details>
+
+              <h3>Статические маршруты</h3>
+              <p class="hint">IP-адреса и подсети (CIDR), которые всегда идут через VPN.</p>
+              <div id="static-routes-list" class="cards"></div>
+              <details class="add-form">
+                <summary>Добавить статический маршрут</summary>
+                <form id="add-static-route-form" class="stack">
+                  <label>
+                    CIDR
+                    <input id="sr-cidr" type="text" placeholder="91.108.4.0/22" required />
+                  </label>
+                  <button type="submit">Добавить</button>
+                </form>
+              </details>
             </div>
           </section>
 

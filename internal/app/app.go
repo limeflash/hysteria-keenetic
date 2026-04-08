@@ -37,7 +37,7 @@ type App struct {
 	store      *state.Store
 	remna      *remnawave.Client
 	runtime    *runtime.Manager
-	routeMgr   *runtime.RouteManager
+	routeMgr   runtime.RoutingStrategy
 	auth       *keenetic.AuthClient
 	rci        *keenetic.RCIClient
 	httpServer *http.Server
@@ -110,7 +110,8 @@ func New(cfg Config) (*App, error) {
 
 	app.remna = remnawave.NewClient(logger)
 	app.runtime = runtime.NewManager(cfg.HysteriaBinaryPath, cfg.RuntimeConfigPath, cfg.HysteriaLogPath, logger, app.handleUnexpectedRuntimeExit)
-	app.routeMgr = runtime.NewRouteManager(cfg.RouteStatePath, logger)
+	snapshot := store.Snapshot()
+	app.routeMgr = runtime.NewRoutingStrategy(snapshot.Routing.Mode, app.rci, cfg.RouteStatePath, logger)
 	app.httpServer = &http.Server{
 		Addr:    cfg.ListenAddress,
 		Handler: app.routes(),
@@ -141,6 +142,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/tunnels/", a.requireAuth(a.handleTunnelAction))
 	mux.HandleFunc("GET /api/runtime/status", a.requireAuth(a.handleRuntimeStatus))
 	mux.HandleFunc("GET /api/logs", a.requireAuth(a.handleLogs))
+	mux.HandleFunc("GET /api/routing", a.requireAuth(a.handleGetRouting))
+	mux.HandleFunc("PUT /api/routing", a.requireAuth(a.handleUpdateRouting))
 	mux.Handle("/", a.serveUI())
 	return a.logRequests(mux)
 }
@@ -536,7 +539,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	a.logger.Printf("activate runtime interface selected=%s actual=%s", selected.InterfaceName, actualInterface)
 
 	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, actualInterface); err != nil {
+	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, actualInterface, current.Routing); err != nil {
 		a.logger.Printf("failed to switch routes for %s: %v", actualInterface, err)
 		if _, stopErr := a.runtime.Deactivate("route setup failed"); stopErr != nil {
 			a.logger.Printf("failed to stop runtime after route setup error for %s: %v", actualInterface, stopErr)
@@ -1051,4 +1054,88 @@ func subscriptionOrigin(rawURL string) string {
 		return "unknown"
 	}
 	return parsed.Host
+}
+
+// --- Routing API ---
+
+func (a *App) handleGetRouting(w http.ResponseWriter, r *http.Request) {
+	snapshot := a.store.Snapshot()
+	writeJSON(w, http.StatusOK, snapshot.Routing)
+}
+
+type updateRoutingRequest struct {
+	Mode         *string              `json:"mode"`
+	DomainGroups []state.DomainGroup  `json:"domainGroups"`
+	StaticRoutes []state.StaticRoute  `json:"staticRoutes"`
+}
+
+func (a *App) handleUpdateRouting(w http.ResponseWriter, r *http.Request) {
+	var req updateRoutingRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	current := a.store.Snapshot()
+	wasActive := current.Runtime.State == "running"
+	oldMode := current.Routing.Mode
+
+	// If tunnel is active, deactivate old routing first.
+	if wasActive {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := a.routeMgr.Deactivate(ctx); err != nil {
+			a.logger.Printf("routing: failed to deactivate old routing: %v", err)
+		}
+		cancel()
+	}
+
+	updated, err := a.store.Update(func(st *state.AppState) error {
+		if req.Mode != nil {
+			mode := *req.Mode
+			if mode != "selective" && mode != "global" {
+				return fmt.Errorf("invalid routing mode %q, must be selective or global", mode)
+			}
+			st.Routing.Mode = mode
+		}
+		if req.DomainGroups != nil {
+			st.Routing.DomainGroups = req.DomainGroups
+		}
+		if req.StaticRoutes != nil {
+			st.Routing.StaticRoutes = req.StaticRoutes
+		}
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	// Recreate routing strategy if mode changed.
+	if req.Mode != nil && *req.Mode != oldMode {
+		a.routeMgr = runtime.NewRoutingStrategy(updated.Routing.Mode, a.rci, a.cfg.RouteStatePath, a.logger)
+	}
+
+	// If tunnel was active, re-apply routing with new config.
+	if wasActive && updated.Runtime.ActiveTunnelID != "" {
+		ifaceName := updated.Runtime.InterfaceName
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := a.routeMgr.Activate(ctx, updated.Subscription.URL, a.activeTunnelServer(updated), ifaceName, updated.Routing); err != nil {
+			a.logger.Printf("routing: failed to re-apply routing: %v", err)
+		}
+		cancel()
+	}
+
+	writeJSON(w, http.StatusOK, updated.Routing)
+}
+
+func (a *App) activeTunnelServer(st state.AppState) string {
+	for _, t := range st.Tunnels {
+		if t.ID == st.Runtime.ActiveTunnelID {
+			return t.Server
+		}
+	}
+	return ""
 }

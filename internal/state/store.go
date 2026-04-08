@@ -66,6 +66,15 @@ func (s *Store) load() error {
 	if loaded.Tunnels == nil {
 		loaded.Tunnels = []TunnelProfile{}
 	}
+	if loaded.Routing.Mode == "" {
+		loaded.Routing = DefaultRoutingConfig()
+	}
+	if loaded.Routing.DomainGroups == nil {
+		loaded.Routing.DomainGroups = []DomainGroup{}
+	}
+	if loaded.Routing.StaticRoutes == nil {
+		loaded.Routing.StaticRoutes = []StaticRoute{}
+	}
 
 	s.state = loaded
 	return nil
@@ -124,5 +133,14 @@ func cloneState(in AppState) AppState {
 			out.Tunnels[i].ALPN = append([]string{}, in.Tunnels[i].ALPN...)
 		}
 	}
+	out.Routing.DomainGroups = make([]DomainGroup, len(in.Routing.DomainGroups))
+	copy(out.Routing.DomainGroups, in.Routing.DomainGroups)
+	for i := range out.Routing.DomainGroups {
+		if in.Routing.DomainGroups[i].Domains != nil {
+			out.Routing.DomainGroups[i].Domains = append([]string{}, in.Routing.DomainGroups[i].Domains...)
+		}
+	}
+	out.Routing.StaticRoutes = make([]StaticRoute, len(in.Routing.StaticRoutes))
+	copy(out.Routing.StaticRoutes, in.Routing.StaticRoutes)
 	return out
 }

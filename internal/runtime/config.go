@@ -11,8 +11,10 @@ import (
 )
 
 const (
-	defaultTunTimeout = "2m"
-	defaultTunMTU     = 1400
+	defaultTunTimeout    = "2m"
+	defaultTunMTU        = 1400
+	defaultBandwidthUp   = 100
+	defaultBandwidthDown = 100
 )
 
 type Profile struct {
@@ -23,6 +25,8 @@ type Profile struct {
 	Auth          string
 	SNI           string
 	ALPN          []string
+	BandwidthUp   int // Mbps, 0 = use default
+	BandwidthDown int // Mbps, 0 = use default
 }
 
 type RoutePlan struct {
@@ -54,6 +58,21 @@ func BuildClientConfig(profile Profile) string {
 		}
 	}
 	builder.WriteString("\n")
+
+	bwUp := profile.BandwidthUp
+	if bwUp <= 0 {
+		bwUp = defaultBandwidthUp
+	}
+	bwDown := profile.BandwidthDown
+	if bwDown <= 0 {
+		bwDown = defaultBandwidthDown
+	}
+	builder.WriteString("bandwidth:\n")
+	fmt.Fprintf(&builder, "  up: %d mbps\n", bwUp)
+	fmt.Fprintf(&builder, "  down: %d mbps\n\n", bwDown)
+
+	builder.WriteString("fastOpen: true\n\n")
+
 	builder.WriteString("congestion:\n")
 	builder.WriteString("  type: bbr\n\n")
 	builder.WriteString("tun:\n")

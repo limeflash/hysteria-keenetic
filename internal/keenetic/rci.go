@@ -304,3 +304,98 @@ func stringValue(value any) string {
 		return fmt.Sprint(typed)
 	}
 }
+
+// FQDNGroupPrefix prevents name collisions with other managers (e.g. awg-manager).
+const FQDNGroupPrefix = "hm-"
+
+// SyncFQDNGroup creates or replaces an FQDN object group in Keenetic NDMS.
+// Keenetic's DNS proxy resolves these domains and keeps IP→interface mapping.
+func (c *RCIClient) SyncFQDNGroup(ctx context.Context, groupName string, domains []string) error {
+	fullName := FQDNGroupPrefix + groupName
+
+	// First delete the existing group so members are replaced, not merged.
+	_ = c.DeleteFQDNGroup(ctx, groupName)
+
+	members := make([]map[string]any, 0, len(domains))
+	for _, d := range domains {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			continue
+		}
+		members = append(members, map[string]any{"fqdn": d})
+	}
+	if len(members) == 0 {
+		return nil
+	}
+
+	_, err := c.PostBatch(ctx, []any{
+		map[string]any{
+			"object-group": map[string]any{
+				"fqdn": map[string]any{
+					"name":   fullName,
+					"member": members,
+				},
+			},
+		},
+	})
+	return err
+}
+
+// DeleteFQDNGroup removes an FQDN object group from Keenetic NDMS.
+func (c *RCIClient) DeleteFQDNGroup(ctx context.Context, groupName string) error {
+	fullName := FQDNGroupPrefix + groupName
+	_, err := c.PostBatch(ctx, []any{
+		map[string]any{
+			"no object-group": map[string]any{
+				"fqdn": map[string]any{
+					"name": fullName,
+				},
+			},
+		},
+	})
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "unable to find") {
+			return nil
+		}
+	}
+	return err
+}
+
+// SyncDNSProxyRoute tells Keenetic to route IPs resolved from the FQDN group
+// through the specified interface. This is the core of selective routing.
+func (c *RCIClient) SyncDNSProxyRoute(ctx context.Context, groupName, interfaceSystemName string) error {
+	fullName := FQDNGroupPrefix + groupName
+	_, err := c.PostBatch(ctx, []any{
+		map[string]any{
+			"dns-proxy": map[string]any{
+				"route": map[string]any{
+					"fqdn":      fullName,
+					"interface": interfaceSystemName,
+				},
+			},
+		},
+	})
+	return err
+}
+
+// DeleteDNSProxyRoute removes a DNS proxy route for the given FQDN group.
+func (c *RCIClient) DeleteDNSProxyRoute(ctx context.Context, groupName string) error {
+	fullName := FQDNGroupPrefix + groupName
+	_, err := c.PostBatch(ctx, []any{
+		map[string]any{
+			"no dns-proxy": map[string]any{
+				"route": map[string]any{
+					"fqdn": fullName,
+				},
+			},
+		},
+	})
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "not found") || strings.Contains(msg, "unable to find") {
+			return nil
+		}
+	}
+	return err
+}

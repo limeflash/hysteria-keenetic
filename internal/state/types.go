@@ -4,6 +4,24 @@ type AppState struct {
 	Subscription SubscriptionSource `json:"subscription"`
 	Tunnels      []TunnelProfile    `json:"tunnels"`
 	Runtime      RuntimeStatus      `json:"runtime"`
+	Routing      RoutingConfig      `json:"routing"`
+}
+
+type RoutingConfig struct {
+	Mode         string        `json:"mode"`
+	DomainGroups []DomainGroup `json:"domainGroups"`
+	StaticRoutes []StaticRoute `json:"staticRoutes"`
+}
+
+type DomainGroup struct {
+	Name    string   `json:"name"`
+	Domains []string `json:"domains"`
+	Enabled bool     `json:"enabled"`
+}
+
+type StaticRoute struct {
+	CIDR    string `json:"cidr"`
+	Enabled bool   `json:"enabled"`
 }
 
 type SubscriptionSource struct {
@@ -52,5 +70,14 @@ func DefaultState(defaultRefreshHours int) AppState {
 			State: "stopped",
 		},
 		Tunnels: []TunnelProfile{},
+		Routing: DefaultRoutingConfig(),
+	}
+}
+
+func DefaultRoutingConfig() RoutingConfig {
+	return RoutingConfig{
+		Mode:         "selective",
+		DomainGroups: []DomainGroup{},
+		StaticRoutes: []StaticRoute{},
 	}
 }

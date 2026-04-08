@@ -300,6 +300,72 @@ button:disabled {
   color: var(--err);
 }
 
+/* Routing tab */
+
+.routing-mode {
+  margin-bottom: 20px;
+}
+
+.routing-mode select {
+  background: rgba(10, 14, 21, 0.7);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 10px 14px;
+  color: var(--text);
+  font: inherit;
+  width: 100%;
+  max-width: 400px;
+}
+
+.toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+#selective-config h3 {
+  margin: 24px 0 6px;
+  font-size: 16px;
+  color: var(--accent);
+}
+
+#selective-config h3:first-child {
+  margin-top: 0;
+}
+
+.hint {
+  color: var(--muted);
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.domain-list {
+  color: var(--muted);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.add-form {
+  margin-top: 14px;
+}
+
+.add-form summary {
+  cursor: pointer;
+  color: var(--accent);
+  padding: 8px 0;
+}
+
+.add-form textarea {
+  background: rgba(10, 14, 21, 0.7);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 13px 14px;
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+  width: 100%;
+}
+
 @media (max-width: 800px) {
   .topbar,
   .tabs,

@@ -265,4 +265,164 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
+// --- Routing ---
+
+let routingConfig = null;
+
+async function refreshRouting() {
+  routingConfig = await api("/api/routing");
+  renderRouting(routingConfig);
+}
+
+async function saveRouting(patch) {
+  routingConfig = await api("/api/routing", {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+  renderRouting(routingConfig);
+}
+
+function renderRouting(cfg) {
+  if (!cfg) return;
+
+  const modeSelect = document.getElementById("routing-mode-select");
+  modeSelect.value = cfg.mode || "selective";
+
+  const selectiveDiv = document.getElementById("selective-config");
+  selectiveDiv.style.display = cfg.mode === "global" ? "none" : "";
+
+  renderDomainGroups(cfg.domainGroups || []);
+  renderStaticRoutes(cfg.staticRoutes || []);
+}
+
+function renderDomainGroups(groups) {
+  const container = document.getElementById("domain-groups-list");
+  container.innerHTML = "";
+
+  if (groups.length === 0) {
+    container.innerHTML = '<div class="card muted">Нет групп доменов. Добавьте ниже.</div>';
+    return;
+  }
+
+  for (const group of groups) {
+    const card = document.createElement("article");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-meta">
+        <span class="status-pill ${group.enabled ? "pill-ok" : "pill-err"}">${group.enabled ? "вкл" : "выкл"}</span>
+        <strong>${escapeHtml(group.name)}</strong>
+        <span class="muted">${group.domains.length} домен(ов)</span>
+      </div>
+      <div class="domain-list">${group.domains.map(d => escapeHtml(d)).join(", ")}</div>
+      <div class="card-footer">
+        <button class="ghost toggle-dg">${group.enabled ? "Выключить" : "Включить"}</button>
+        <button class="ghost delete-dg">Удалить</button>
+      </div>
+    `;
+
+    card.querySelector(".toggle-dg").addEventListener("click", async () => {
+      const updated = (routingConfig.domainGroups || []).map(g =>
+        g.name === group.name ? { ...g, enabled: !g.enabled } : g
+      );
+      await saveRouting({ domainGroups: updated });
+    });
+
+    card.querySelector(".delete-dg").addEventListener("click", async () => {
+      const updated = (routingConfig.domainGroups || []).filter(g => g.name !== group.name);
+      await saveRouting({ domainGroups: updated });
+    });
+
+    container.appendChild(card);
+  }
+}
+
+function renderStaticRoutes(routes) {
+  const container = document.getElementById("static-routes-list");
+  container.innerHTML = "";
+
+  if (routes.length === 0) {
+    container.innerHTML = '<div class="card muted">Нет статических маршрутов.</div>';
+    return;
+  }
+
+  for (const route of routes) {
+    const card = document.createElement("article");
+    card.className = "card";
+    card.innerHTML = `
+      <div class="card-meta">
+        <span class="status-pill ${route.enabled ? "pill-ok" : "pill-err"}">${route.enabled ? "вкл" : "выкл"}</span>
+        <code>${escapeHtml(route.cidr)}</code>
+      </div>
+      <div class="card-footer">
+        <button class="ghost toggle-sr">${route.enabled ? "Выключить" : "Включить"}</button>
+        <button class="ghost delete-sr">Удалить</button>
+      </div>
+    `;
+
+    card.querySelector(".toggle-sr").addEventListener("click", async () => {
+      const updated = (routingConfig.staticRoutes || []).map(r =>
+        r.cidr === route.cidr ? { ...r, enabled: !r.enabled } : r
+      );
+      await saveRouting({ staticRoutes: updated });
+    });
+
+    card.querySelector(".delete-sr").addEventListener("click", async () => {
+      const updated = (routingConfig.staticRoutes || []).filter(r => r.cidr !== route.cidr);
+      await saveRouting({ staticRoutes: updated });
+    });
+
+    container.appendChild(card);
+  }
+}
+
+document.getElementById("routing-mode-select").addEventListener("change", async (e) => {
+  await saveRouting({ mode: e.target.value });
+});
+
+document.getElementById("add-domain-group-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = document.getElementById("dg-name").value.trim();
+  const domains = document.getElementById("dg-domains").value
+    .split("\n")
+    .map(d => d.trim())
+    .filter(Boolean);
+
+  if (!name || domains.length === 0) return;
+
+  const existing = routingConfig.domainGroups || [];
+  if (existing.some(g => g.name === name)) {
+    alert("Группа с таким именем уже существует");
+    return;
+  }
+
+  const updated = [...existing, { name, domains, enabled: true }];
+  await saveRouting({ domainGroups: updated });
+
+  document.getElementById("dg-name").value = "";
+  document.getElementById("dg-domains").value = "";
+});
+
+document.getElementById("add-static-route-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const cidr = document.getElementById("sr-cidr").value.trim();
+  if (!cidr) return;
+
+  const existing = routingConfig.staticRoutes || [];
+  if (existing.some(r => r.cidr === cidr)) {
+    alert("Такой маршрут уже существует");
+    return;
+  }
+
+  const updated = [...existing, { cidr, enabled: true }];
+  await saveRouting({ staticRoutes: updated });
+
+  document.getElementById("sr-cidr").value = "";
+});
+
+// Patch refreshDashboard to also load routing
+const _origRefreshDashboard = refreshDashboard;
+refreshDashboard = async function () {
+  await Promise.all([_origRefreshDashboard(), refreshRouting()]);
+};
+
 bootstrap();
