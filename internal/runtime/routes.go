@@ -38,8 +38,8 @@ func NewRouteManager(statePath string, logger *logs.Logger) *RouteManager {
 func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost, interfaceName string) error {
 	state := RouteState{
 		InterfaceName:    strings.TrimSpace(interfaceName),
-		IPv4DefaultRoute: strings.TrimSpace(runIP(ctx, false, "route", "show", "default")),
-		IPv6DefaultRoute: strings.TrimSpace(runIP(ctx, true, "route", "show", "default")),
+		IPv4DefaultRoute: firstRouteLine(runIP(ctx, false, "route", "show", "default")),
+		IPv6DefaultRoute: firstRouteLine(runIP(ctx, true, "route", "show", "default")),
 	}
 
 	if state.InterfaceName == "" {
@@ -100,10 +100,10 @@ func (m *RouteManager) EnsureSubscriptionReachable(ctx context.Context, subscrip
 	ipv4Base := strings.TrimSpace(state.IPv4DefaultRoute)
 	ipv6Base := strings.TrimSpace(state.IPv6DefaultRoute)
 	if ipv4Base == "" {
-		ipv4Base = strings.TrimSpace(runIP(ctx, false, "route", "show", "default"))
+		ipv4Base = firstRouteLine(runIP(ctx, false, "route", "show", "default"))
 	}
 	if ipv6Base == "" {
-		ipv6Base = strings.TrimSpace(runIP(ctx, true, "route", "show", "default"))
+		ipv6Base = firstRouteLine(runIP(ctx, true, "route", "show", "default"))
 	}
 
 	ipv4Args := routeArgs(strings.Fields(ipv4Base))
@@ -278,6 +278,8 @@ func routeArgs(fields []string) []string {
 				args = append(args, "dev", fields[idx+1])
 				idx++
 			}
+		case "src", "metric", "proto", "scope", "pref", "uid", "cache":
+			return args
 		}
 	}
 	return args
@@ -384,4 +386,15 @@ func waitForInterface(ctx context.Context, interfaceName string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func firstRouteLine(output string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return line
+	}
+	return ""
 }
