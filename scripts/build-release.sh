@@ -37,9 +37,12 @@ build_manager() {
     GOOS=linux GOARCH="${goarch}" "${GO_BIN}" build -o "${data_dir}/opt/bin/hysteria-manager" "${ROOT_DIR}"
   fi
 
+  chmod +x "${data_dir}/opt/bin/hysteria-manager"
   cp "${ROOT_DIR}/packaging/init.d/S99hysteria-manager" "${data_dir}/opt/etc/init.d/S99hysteria-manager"
+  chmod +x "${data_dir}/opt/etc/init.d/S99hysteria-manager"
   cp "${ROOT_DIR}/packaging/control/postinst" "${control_dir}/postinst"
   cp "${ROOT_DIR}/packaging/control/prerm" "${control_dir}/prerm"
+  chmod +x "${control_dir}/postinst" "${control_dir}/prerm"
   sed \
     -e "s/@VERSION@/${VERSION}/g" \
     -e "s/@ARCH@/${entware_arch}/g" \
