@@ -49,22 +49,29 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 		return err
 	}
 
-	hostRouteArgs4, hostRouteArgs6 := routeArgsFromDefault(state.IPv4DefaultRoute, state.IPv6DefaultRoute)
 	for _, cidr := range pinnedCIDRs(subscriptionURL, tunnelHost) {
 		if strings.Contains(cidr, ":") {
-			if len(hostRouteArgs6) == 0 {
+			hostArgs, err := routeArgsForDestination(ctx, true, cidr)
+			if err != nil {
+				return err
+			}
+			if len(hostArgs) == 0 {
 				continue
 			}
-			if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, hostRouteArgs6...)...); err != nil {
+			if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
 				return err
 			}
 			state.PinnedIPv6Routes = append(state.PinnedIPv6Routes, cidr)
 			continue
 		}
-		if len(hostRouteArgs4) == 0 {
+		hostArgs, err := routeArgsForDestination(ctx, false, cidr)
+		if err != nil {
+			return err
+		}
+		if len(hostArgs) == 0 {
 			continue
 		}
-		if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, hostRouteArgs4...)...); err != nil {
+		if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
 			return err
 		}
 		state.PinnedIPv4Routes = append(state.PinnedIPv4Routes, cidr)
@@ -191,10 +198,6 @@ func runIP(ctx context.Context, ipv6 bool, args ...string) string {
 	return strings.TrimSpace(string(output))
 }
 
-func routeArgsFromDefault(ipv4Default, ipv6Default string) ([]string, []string) {
-	return routeArgs(strings.Fields(ipv4Default)), routeArgs(strings.Fields(ipv6Default))
-}
-
 func routeArgs(fields []string) []string {
 	if len(fields) == 0 {
 		return nil
@@ -216,6 +219,29 @@ func routeArgs(fields []string) []string {
 		}
 	}
 	return args
+}
+
+func routeArgsForDestination(ctx context.Context, ipv6 bool, cidr string) ([]string, error) {
+	target := cidr
+	if strings.Contains(target, "/") {
+		host, _, err := net.ParseCIDR(target)
+		if err == nil {
+			target = host.String()
+		} else {
+			target = strings.SplitN(target, "/", 2)[0]
+		}
+	}
+
+	output := runIP(ctx, ipv6, "route", "get", target)
+	if output == "" {
+		return nil, fmt.Errorf("unable to resolve route for %s", cidr)
+	}
+
+	args := routeArgs(strings.Fields(output))
+	if len(args) == 0 {
+		return nil, fmt.Errorf("unable to parse route for %s from %q", cidr, output)
+	}
+	return args, nil
 }
 
 func pinnedCIDRs(subscriptionURL, tunnelHost string) []string {
