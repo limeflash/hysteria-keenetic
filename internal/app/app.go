@@ -490,8 +490,8 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		a.logger.Printf("failed to reset previous routes before activate: %v", err)
 	}
 	resetCancel()
-	if err := a.cleanupStaleTunInterface(selected.InterfaceName); err != nil {
-		a.logger.Printf("failed to cleanup stale tun iface=%s err=%v", selected.InterfaceName, err)
+	if err := a.cleanupManagedTunInterfaces(current.Tunnels); err != nil {
+		a.logger.Printf("failed to cleanup managed tun interfaces err=%v", err)
 		return state.AppState{}, err
 	}
 
@@ -522,12 +522,19 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		a.logger.Printf("activate failed id=%s name=%s iface=%s err=%v", selected.ID, selected.Name, selected.InterfaceName, err)
 		return updated, err
 	}
+	actualInterface := strings.TrimSpace(status.InterfaceName)
+	if actualInterface == "" {
+		actualInterface = selected.InterfaceName
+	}
+	selectedCopy := *selected
+	selectedCopy.InterfaceName = actualInterface
+	a.logger.Printf("activate runtime interface selected=%s actual=%s", selected.InterfaceName, actualInterface)
 
 	activateCtx, activateCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, selected.InterfaceName); err != nil {
-		a.logger.Printf("failed to switch routes for %s: %v", selected.InterfaceName, err)
+	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, actualInterface); err != nil {
+		a.logger.Printf("failed to switch routes for %s: %v", actualInterface, err)
 		if _, stopErr := a.runtime.Deactivate("route setup failed"); stopErr != nil {
-			a.logger.Printf("failed to stop runtime after route setup error for %s: %v", selected.InterfaceName, stopErr)
+			a.logger.Printf("failed to stop runtime after route setup error for %s: %v", actualInterface, stopErr)
 		}
 		activateCancel()
 		updated, saveErr := a.store.Update(func(st *state.AppState) error {
@@ -535,6 +542,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 			st.Runtime.ActiveTunnelID = ""
 			st.Runtime.Connected = false
 			st.Runtime.PID = 0
+			st.Runtime.InterfaceName = ""
 			st.Runtime.LastError = err.Error()
 			for i := range st.Tunnels {
 				st.Tunnels[i].Active = false
@@ -545,20 +553,24 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 			return state.AppState{}, errors.Join(err, saveErr)
 		}
 		return updated, err
-	} else if err := a.syncTunnelToNDMS(activateCtx, *selected, true); err != nil {
-		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", selected.InterfaceName, err)
-	} else if err := a.pruneNDMSTunnels(activateCtx, current.Tunnels, selected.InterfaceName); err != nil {
-		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", selected.InterfaceName, err)
+	} else if err := a.syncTunnelToNDMS(activateCtx, selectedCopy, true); err != nil {
+		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", actualInterface, err)
+	} else if err := a.pruneNDMSTunnels(activateCtx, current.Tunnels, actualInterface); err != nil {
+		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", actualInterface, err)
 	} else if err := a.rci.Save(activateCtx); err != nil {
-		a.logger.Printf("failed to save active NDMS config for %s: %v", selected.InterfaceName, err)
+		a.logger.Printf("failed to save active NDMS config for %s: %v", actualInterface, err)
 	}
 	activateCancel()
 
 	next, err := a.store.Update(func(st *state.AppState) error {
 		status.ActiveTunnelID = tunnelID
 		status.LastError = ""
+		status.InterfaceName = actualInterface
 		st.Runtime = status
 		for i := range st.Tunnels {
+			if st.Tunnels[i].ID == tunnelID {
+				st.Tunnels[i].InterfaceName = actualInterface
+			}
 			st.Tunnels[i].Active = st.Tunnels[i].ID == tunnelID
 		}
 		return nil
@@ -595,6 +607,7 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 		st.Runtime = status
 		st.Runtime.LastError = ""
 		st.Runtime.ActiveTunnelID = ""
+		st.Runtime.InterfaceName = ""
 		st.Runtime.Connected = false
 		st.Runtime.PID = 0
 		for i := range st.Tunnels {
@@ -693,6 +706,7 @@ func (a *App) handleUnexpectedRuntimeExit(err error) {
 		st.Runtime.State = "error"
 		st.Runtime.Connected = false
 		st.Runtime.PID = 0
+		st.Runtime.InterfaceName = ""
 		st.Runtime.LastError = err.Error()
 		st.Runtime.ActiveTunnelID = ""
 		for i := range st.Tunnels {
@@ -784,21 +798,32 @@ func (a *App) syncTunnelToNDMS(ctx context.Context, tunnel state.TunnelProfile, 
 	})
 }
 
-func (a *App) cleanupStaleTunInterface(interfaceName string) error {
-	interfaceName = strings.TrimSpace(interfaceName)
-	if interfaceName == "" {
-		return nil
-	}
-	if _, err := net.InterfaceByName(interfaceName); err != nil {
-		return nil
+func (a *App) cleanupManagedTunInterfaces(tunnels []state.TunnelProfile) error {
+	seen := make(map[string]struct{})
+	var errs []error
+
+	for _, tunnel := range tunnels {
+		interfaceName := strings.TrimSpace(tunnel.InterfaceName)
+		if interfaceName == "" {
+			continue
+		}
+		if _, ok := seen[interfaceName]; ok {
+			continue
+		}
+		seen[interfaceName] = struct{}{}
+
+		if _, err := net.InterfaceByName(interfaceName); err != nil {
+			continue
+		}
+
+		a.logger.Printf("removing stale tun interface iface=%s before activation", interfaceName)
+		output, err := exec.Command("ip", "link", "delete", "dev", interfaceName).CombinedOutput()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("delete %s: %w (%s)", interfaceName, err, strings.TrimSpace(string(output))))
+		}
 	}
 
-	a.logger.Printf("removing stale tun interface iface=%s before activation", interfaceName)
-	output, err := exec.Command("ip", "link", "delete", "dev", interfaceName).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("delete %s: %w (%s)", interfaceName, err, strings.TrimSpace(string(output)))
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (a *App) pruneNDMSTunnels(ctx context.Context, tunnels []state.TunnelProfile, keepInterface string) error {

@@ -35,6 +35,7 @@ type TunnelProfile struct {
 type RuntimeStatus struct {
 	State          string `json:"state"`
 	ActiveTunnelID string `json:"activeTunnelId"`
+	InterfaceName  string `json:"interfaceName"`
 	PID            int    `json:"pid"`
 	Connected      bool   `json:"connected"`
 	LastConnectAt  string `json:"lastConnectAt"`

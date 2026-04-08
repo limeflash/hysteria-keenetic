@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +34,7 @@ type processHandle struct {
 	done          chan struct{}
 	stopRequested bool
 	waitErr       error
+	interfaceName string
 }
 
 func NewManager(binaryPath, configPath, logPath string, logger *logs.Logger, onUnexpectedExit func(error)) *Manager {
@@ -58,6 +63,7 @@ func (m *Manager) Activate(_ context.Context, profile Profile) (state.RuntimeSta
 	if _, err := m.Deactivate("switching tunnel"); err != nil {
 		return state.RuntimeStatus{}, err
 	}
+	knownInterfaces := listOpkgTunInterfaces()
 
 	logFile, err := os.OpenFile(m.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -91,6 +97,12 @@ func (m *Manager) Activate(_ context.Context, profile Profile) (state.RuntimeSta
 	case <-time.After(2 * time.Second):
 	}
 
+	actualInterface := detectOpkgTunInterface(m.logPath, knownInterfaces)
+	if actualInterface == "" {
+		actualInterface = profile.InterfaceName
+	}
+	handle.interfaceName = actualInterface
+
 	m.mu.Lock()
 	m.current = handle
 	m.mu.Unlock()
@@ -99,6 +111,7 @@ func (m *Manager) Activate(_ context.Context, profile Profile) (state.RuntimeSta
 
 	return state.RuntimeStatus{
 		State:         "running",
+		InterfaceName: actualInterface,
 		PID:           cmd.Process.Pid,
 		Connected:     true,
 		LastConnectAt: time.Now().UTC().Format(time.RFC3339),
@@ -146,9 +159,10 @@ func (m *Manager) Status() state.RuntimeStatus {
 	}
 
 	return state.RuntimeStatus{
-		State:     "running",
-		PID:       m.current.cmd.Process.Pid,
-		Connected: true,
+		State:         "running",
+		InterfaceName: m.current.interfaceName,
+		PID:           m.current.cmd.Process.Pid,
+		Connected:     true,
 	}
 }
 
@@ -169,4 +183,55 @@ func (m *Manager) watch(handle *processHandle) {
 		}
 		m.onUnexpectedExit(err)
 	}
+}
+
+func listOpkgTunInterfaces() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+
+	result := make([]string, 0, len(ifaces))
+	for _, iface := range ifaces {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(iface.Name)), "opkgtun") {
+			result = append(result, iface.Name)
+		}
+	}
+	return result
+}
+
+func detectOpkgTunInterface(logPath string, known []string) string {
+	knownSet := make(map[string]struct{}, len(known))
+	for _, name := range known {
+		knownSet[name] = struct{}{}
+	}
+
+	re := regexp.MustCompile(`"interface":\s*"([^"]+)"`)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		current := listOpkgTunInterfaces()
+		for _, name := range current {
+			if _, exists := knownSet[name]; !exists {
+				return name
+			}
+		}
+
+		data, err := os.ReadFile(logPath)
+		if err == nil {
+			matches := re.FindAllStringSubmatch(string(data), -1)
+			for idx := len(matches) - 1; idx >= 0; idx-- {
+				name := strings.TrimSpace(matches[idx][1])
+				if name == "" || !strings.HasPrefix(strings.ToLower(name), "opkgtun") {
+					continue
+				}
+				if len(knownSet) == 0 || !slices.Contains(known, name) {
+					return name
+				}
+			}
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	return ""
 }
