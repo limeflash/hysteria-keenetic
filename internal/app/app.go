@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -137,7 +138,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/runtime/status", a.requireAuth(a.handleRuntimeStatus))
 	mux.HandleFunc("GET /api/logs", a.requireAuth(a.handleLogs))
 	mux.Handle("/", a.serveUI())
-	return mux
+	return a.logRequests(mux)
 }
 
 func (a *App) serveUI() http.Handler {
@@ -166,13 +167,16 @@ func (a *App) handleSession(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(r, &req); err != nil {
+		a.logger.Printf("login request rejected: %v", err)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
+	a.logger.Printf("login attempt user=%s", strings.TrimSpace(req.Login))
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := a.auth.Authenticate(ctx, req.Login, req.Password); err != nil {
+		a.logger.Printf("login failed user=%s err=%v", strings.TrimSpace(req.Login), err)
 		writeError(w, http.StatusUnauthorized, err)
 		return
 	}
@@ -197,6 +201,7 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Authenticated: true,
 		Username:      req.Login,
 	})
+	a.logger.Printf("login succeeded user=%s", strings.TrimSpace(req.Login))
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -260,25 +265,32 @@ func (a *App) handlePatchSettings(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleImportSubscription(w http.ResponseWriter, r *http.Request) {
 	var req subscriptionImportRequest
 	if err := decodeJSON(r, &req); err != nil {
+		a.logger.Printf("subscription import rejected: %v", err)
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 
+	a.logger.Printf("subscription import requested source=%s", subscriptionOrigin(req.URL))
 	next, err := a.ImportSubscription(r.Context(), req.URL)
 	if err != nil {
+		a.logger.Printf("subscription import failed source=%s err=%v", subscriptionOrigin(req.URL), err)
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
 
+	a.logger.Printf("subscription import succeeded source=%s tunnels=%d", subscriptionOrigin(req.URL), len(next.Tunnels))
 	writeJSON(w, http.StatusOK, next)
 }
 
 func (a *App) handleRefreshSubscription(w http.ResponseWriter, r *http.Request) {
+	a.logger.Printf("subscription refresh requested")
 	next, err := a.RefreshSubscription(r.Context())
 	if err != nil {
+		a.logger.Printf("subscription refresh failed: %v", err)
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
+	a.logger.Printf("subscription refresh succeeded tunnels=%d", len(next.Tunnels))
 	writeJSON(w, http.StatusOK, next)
 }
 
@@ -296,22 +308,28 @@ func (a *App) handleTunnelAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, action := parts[0], parts[1]
+	a.logger.Printf("tunnel action requested id=%s action=%s", id, action)
 	switch action {
 	case "activate":
 		next, err := a.ActivateTunnel(r.Context(), id)
 		if err != nil {
+			a.logger.Printf("tunnel action failed id=%s action=%s err=%v", id, action, err)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		a.logger.Printf("tunnel action succeeded id=%s action=%s", id, action)
 		writeJSON(w, http.StatusOK, next)
 	case "deactivate":
 		next, err := a.DeactivateTunnel("api request")
 		if err != nil {
+			a.logger.Printf("tunnel action failed id=%s action=%s err=%v", id, action, err)
 			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
+		a.logger.Printf("tunnel action succeeded id=%s action=%s", id, action)
 		writeJSON(w, http.StatusOK, next)
 	default:
+		a.logger.Printf("tunnel action rejected id=%s action=%s", id, action)
 		writeError(w, http.StatusNotFound, errors.New("unknown tunnel action"))
 	}
 }
@@ -385,6 +403,7 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 		}
 	}
 
+	a.logger.Printf("refreshing subscription source=%s", subscriptionOrigin(current.Subscription.URL))
 	result, err := a.remna.FetchSubscription(ctx, current.Subscription.URL, current.Subscription.HWID, current.Subscription.UserAgent, a.cfg.DefaultRefreshHours)
 	if err != nil {
 		updated, saveErr := a.store.Update(func(st *state.AppState) error {
@@ -394,6 +413,7 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 		if saveErr != nil {
 			return state.AppState{}, errors.Join(err, saveErr)
 		}
+		a.logger.Printf("subscription refresh fetch failed source=%s err=%v", subscriptionOrigin(current.Subscription.URL), err)
 		return updated, err
 	}
 
@@ -440,6 +460,7 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 	if err := a.syncNDMSProfiles(ctx, next.Tunnels); err != nil {
 		a.logger.Printf("failed to sync NDMS profiles: %v", err)
 	}
+	a.logger.Printf("subscription refresh merged tunnels=%d source=%s", len(next.Tunnels), subscriptionOrigin(current.Subscription.URL))
 
 	return next, nil
 }
@@ -462,6 +483,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	if selected.Missing {
 		return state.AppState{}, errors.New("cannot activate a tunnel that is missing from the latest subscription refresh")
 	}
+	a.logger.Printf("activating tunnel id=%s name=%s iface=%s server=%s:%d", selected.ID, selected.Name, selected.InterfaceName, selected.Server, selected.Port)
 
 	prepareCtx, prepareCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := a.syncTunnelToNDMS(prepareCtx, *selected, false); err != nil {
@@ -495,6 +517,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		if saveErr != nil {
 			return state.AppState{}, errors.Join(err, saveErr)
 		}
+		a.logger.Printf("activate failed id=%s name=%s iface=%s err=%v", selected.ID, selected.Name, selected.InterfaceName, err)
 		return updated, err
 	}
 
@@ -518,6 +541,7 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	if err != nil {
 		return state.AppState{}, err
 	}
+	a.logger.Printf("activate succeeded id=%s name=%s iface=%s pid=%d", selected.ID, selected.Name, selected.InterfaceName, next.Runtime.PID)
 
 	return next, nil
 }
@@ -526,12 +550,14 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.logger.Printf("deactivating tunnel reason=%s", reason)
 	status, err := a.runtime.Deactivate(reason)
 	if err != nil {
+		a.logger.Printf("deactivate failed reason=%s err=%v", reason, err)
 		return state.AppState{}, err
 	}
 
-	return a.store.Update(func(st *state.AppState) error {
+	next, err := a.store.Update(func(st *state.AppState) error {
 		st.Runtime = status
 		st.Runtime.LastError = ""
 		st.Runtime.ActiveTunnelID = ""
@@ -542,6 +568,11 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 		}
 		return nil
 	})
+	if err != nil {
+		return state.AppState{}, err
+	}
+	a.logger.Printf("deactivate succeeded reason=%s", reason)
+	return next, nil
 }
 
 func (a *App) autoRefreshLoop() {
@@ -662,6 +693,14 @@ func (a *App) syncNDMSProfiles(ctx context.Context, tunnels []state.TunnelProfil
 
 func (a *App) syncTunnelToNDMS(ctx context.Context, tunnel state.TunnelProfile, enabled bool) error {
 	tun := runtime.DefaultTunSettings(tunnel.InterfaceName)
+	a.logger.Printf(
+		"syncing NDMS tunnel iface=%s system=%s enabled=%t ipv4=%s mtu=%d",
+		tunnel.InterfaceName,
+		keenetic.RouterInterfaceName(tunnel.InterfaceName),
+		enabled,
+		tun.IPv4CIDR,
+		tun.MTU,
+	)
 	return a.rci.SyncOpkgTun(ctx, keenetic.OpkgTunConfig{
 		InterfaceName: tunnel.InterfaceName,
 		Description:   tunnel.Name,
@@ -835,4 +874,40 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(p)
+}
+
+func (a *App) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w}
+		started := time.Now()
+		next.ServeHTTP(rec, r)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			a.logger.Printf("http %s %s -> %d in %s", r.Method, r.URL.Path, rec.status, time.Since(started).Round(time.Millisecond))
+		}
+	})
+}
+
+func subscriptionOrigin(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return "unknown"
+	}
+	return parsed.Host
 }
