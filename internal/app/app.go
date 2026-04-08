@@ -503,6 +503,19 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		return state.AppState{}, err
 	}
 
+	// Register interface with Keenetic NDMS BEFORE starting Hysteria.
+	// Keenetic's opkg-tun module creates the underlying tun device;
+	// Hysteria then attaches to the existing device instead of creating one.
+	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := a.syncTunnelToNDMS(ndmsCtx, *selected, true); err != nil {
+		a.logger.Printf("failed to register NDMS tunnel for %s: %v", selected.InterfaceName, err)
+	} else if err := a.pruneNDMSTunnels(ndmsCtx, current.Tunnels, selected.InterfaceName); err != nil {
+		a.logger.Printf("failed to prune inactive NDMS tunnels: %v", err)
+	} else if err := a.rci.Save(ndmsCtx); err != nil {
+		a.logger.Printf("failed to save NDMS config: %v", err)
+	}
+	ndmsCancel()
+
 	status, err := a.runtime.Activate(ctx, runtime.Profile{
 		Name:          selected.Name,
 		InterfaceName: selected.InterfaceName,
@@ -537,18 +550,6 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 	selectedCopy := *selected
 	selectedCopy.InterfaceName = actualInterface
 	a.logger.Printf("activate runtime interface selected=%s actual=%s", selected.InterfaceName, actualInterface)
-
-	// Register interface with Keenetic NDMS first — this must happen even if
-	// route activation fails so the tunnel appears in the native router UI.
-	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.syncTunnelToNDMS(ndmsCtx, selectedCopy, true); err != nil {
-		a.logger.Printf("failed to mark NDMS tunnel active for %s: %v", actualInterface, err)
-	} else if err := a.pruneNDMSTunnels(ndmsCtx, current.Tunnels, actualInterface); err != nil {
-		a.logger.Printf("failed to prune inactive NDMS tunnels after activating %s: %v", actualInterface, err)
-	} else if err := a.rci.Save(ndmsCtx); err != nil {
-		a.logger.Printf("failed to save active NDMS config for %s: %v", actualInterface, err)
-	}
-	ndmsCancel()
 
 	activateCtx, activateCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	if err := a.routeMgr.Activate(activateCtx, current.Subscription.URL, selected.Server, actualInterface, current.Routing); err != nil {
