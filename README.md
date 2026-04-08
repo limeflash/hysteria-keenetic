@@ -56,3 +56,49 @@ curl -sL https://raw.githubusercontent.com/limeflash/hysteria-keenetic/main/scri
 ```
 
 Скрипт определяет архитектуру Entware и скачивает соответствующий `.ipk`.
+
+Актуальный релиз:
+
+- [v0.1.1](https://github.com/limeflash/hysteria-keenetic/releases/tag/v0.1.1)
+
+## Ручная установка или обновление
+
+Для `aarch64-3.10`:
+
+```sh
+cd /tmp
+rm -f hysteria-manager.ipk
+wget -O hysteria-manager.ipk https://github.com/limeflash/hysteria-keenetic/releases/download/v0.1.1/hysteria-manager_aarch64-3.10.ipk
+/opt/bin/opkg install ./hysteria-manager.ipk
+/opt/etc/init.d/S99hysteria-manager restart
+```
+
+Если `opkg` пишет, что пакет уже установлен, используйте:
+
+```sh
+/opt/bin/opkg install --force-reinstall ./hysteria-manager.ipk
+/opt/etc/init.d/S99hysteria-manager restart
+```
+
+## Полезные команды на роутере
+
+Проверить сервис:
+
+```sh
+/opt/etc/init.d/S99hysteria-manager status
+ps | grep hysteria-manager
+netstat -lntp | grep 2230
+```
+
+Открыть панель:
+
+```text
+http://192.168.1.1:2230
+```
+
+Логи:
+
+```sh
+tail -n 100 /opt/var/log/hysteria-manager/manager.log
+tail -n 100 /opt/var/log/hysteria-manager/hysteria.log
+```
