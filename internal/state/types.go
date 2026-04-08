@@ -39,7 +39,7 @@ type TunnelProfile struct {
 	InterfaceName          string   `json:"interfaceName"`
 	Server                 string   `json:"server"`
 	Port                   int      `json:"port"`
-	Auth                   string   `json:"-"`
+	Auth                   string   `json:"auth"`
 	AuthMasked             string   `json:"authMasked"`
 	SNI                    string   `json:"sni"`
 	ALPN                   []string `json:"alpn"`
