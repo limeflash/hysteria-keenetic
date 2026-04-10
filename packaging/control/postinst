@@ -3,6 +3,12 @@ set -e
 
 mkdir -p /opt/etc/hysteria-manager/profiles
 mkdir -p /opt/var/log/hysteria-manager
-chmod +x /opt/etc/init.d/S99hysteria-manager || true
+
+# Ensure binaries and scripts are executable. Some package builders (notably
+# Windows builds) lose the +x bit during tar packing, so re-apply it here.
+chmod +x /opt/bin/hysteria-manager 2>/dev/null || true
+chmod +x /opt/bin/hysteria 2>/dev/null || true
+chmod +x /opt/etc/init.d/S99hysteria-manager 2>/dev/null || true
 chmod +x /opt/etc/ndm/iflayerchanged.d/50-hysteria-manager.sh 2>/dev/null || true
+
 /opt/etc/init.d/S99hysteria-manager restart || true
