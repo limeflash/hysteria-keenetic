@@ -59,30 +59,45 @@ func (m *RouteManager) Activate(ctx context.Context, subscriptionURL, tunnelHost
 		return err
 	}
 
-	for _, cidr := range pinnedCIDRs(subscriptionURL, tunnelHost) {
+	plan, planErr := BuildRoutePlan(subscriptionURL, tunnelHost)
+	if planErr != nil {
+		m.logger.Printf("failed to build route plan, falling back to host pinning only: %v", planErr)
+	}
+
+	allCIDRs := pinnedCIDRs(subscriptionURL, tunnelHost)
+	if planErr == nil {
+		allCIDRs = appendUnique(allCIDRs, plan.IPv4Excludes)
+		allCIDRs = appendUnique(allCIDRs, plan.IPv6Excludes)
+	}
+
+	for _, cidr := range allCIDRs {
 		if strings.Contains(cidr, ":") {
 			hostArgs, err := routeArgsForDestination(ctx, true, cidr)
 			if err != nil {
-				return err
+				m.logger.Printf("failed to resolve route args for %s: %v", cidr, err)
+				continue
 			}
 			if len(hostArgs) == 0 {
 				continue
 			}
 			if err := m.run(ctx, true, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
-				return err
+				m.logger.Printf("failed to pin ipv6 route %s: %v", cidr, err)
+				continue
 			}
 			rs.PinnedIPv6Routes = append(rs.PinnedIPv6Routes, cidr)
 			continue
 		}
 		hostArgs, err := routeArgsForDestination(ctx, false, cidr)
 		if err != nil {
-			return err
+			m.logger.Printf("failed to resolve route args for %s: %v", cidr, err)
+			continue
 		}
 		if len(hostArgs) == 0 {
 			continue
 		}
 		if err := m.run(ctx, false, append([]string{"route", "replace", cidr}, hostArgs...)...); err != nil {
-			return err
+			m.logger.Printf("failed to pin ipv4 route %s: %v", cidr, err)
+			continue
 		}
 		rs.PinnedIPv4Routes = append(rs.PinnedIPv4Routes, cidr)
 	}
@@ -407,4 +422,19 @@ func firstRouteLine(output string) string {
 		return line
 	}
 	return ""
+}
+
+func appendUnique(base, extra []string) []string {
+	seen := make(map[string]struct{}, len(base))
+	for _, s := range base {
+		seen[s] = struct{}{}
+	}
+	for _, s := range extra {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		base = append(base, s)
+	}
+	return base
 }

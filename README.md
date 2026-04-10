@@ -60,7 +60,7 @@ curl -sL https://raw.githubusercontent.com/limeflash/hysteria-keenetic/main/scri
 
 Актуальный релиз:
 
-- [v0.1.11](https://github.com/limeflash/hysteria-keenetic/releases/tag/v0.1.11)
+- [v0.3.0](https://github.com/limeflash/hysteria-keenetic/releases/tag/v0.3.0)
 
 ## Ручная установка или обновление
 
@@ -69,7 +69,7 @@ curl -sL https://raw.githubusercontent.com/limeflash/hysteria-keenetic/main/scri
 ```sh
 cd /tmp
 rm -f hysteria-manager.ipk
-wget -O hysteria-manager.ipk https://github.com/limeflash/hysteria-keenetic/releases/download/v0.1.11/hysteria-manager_aarch64-3.10.ipk
+wget -O hysteria-manager.ipk https://github.com/limeflash/hysteria-keenetic/releases/download/v0.3.0/hysteria-manager_aarch64-3.10.ipk
 /opt/bin/opkg install ./hysteria-manager.ipk
 /opt/etc/init.d/S99hysteria-manager restart
 ```

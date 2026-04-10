@@ -128,6 +128,31 @@ func (a *App) Run() error {
 	return a.httpServer.ListenAndServe()
 }
 
+func (a *App) Shutdown(ctx context.Context) {
+	a.logger.Printf("shutting down...")
+
+	if err := a.httpServer.Shutdown(ctx); err != nil {
+		a.logger.Printf("http server shutdown error: %v", err)
+	}
+
+	a.mu.Lock()
+	snapshot := a.store.Snapshot()
+	hasActive := snapshot.Runtime.ActiveTunnelID != ""
+	a.mu.Unlock()
+
+	if hasActive {
+		if err := a.routeMgr.Deactivate(ctx); err != nil {
+			a.logger.Printf("failed to restore routes on shutdown: %v", err)
+		}
+		if _, err := a.runtime.Deactivate("shutdown"); err != nil {
+			a.logger.Printf("failed to stop runtime on shutdown: %v", err)
+		}
+	}
+
+	a.logger.Printf("shutdown complete")
+	_ = a.logger.Close()
+}
+
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", a.handleHealth)
@@ -144,6 +169,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/logs", a.requireAuth(a.handleLogs))
 	mux.HandleFunc("GET /api/routing", a.requireAuth(a.handleGetRouting))
 	mux.HandleFunc("PUT /api/routing", a.requireAuth(a.handleUpdateRouting))
+	mux.HandleFunc("GET /api/hook/iface-changed", a.handleIfaceChanged)
 	mux.Handle("/", a.serveUI())
 	return a.logRequests(mux)
 }
@@ -469,6 +495,11 @@ func (a *App) refreshSubscriptionLocked(ctx context.Context) (state.AppState, er
 	if err := a.syncProfileConfigs(next.Tunnels); err != nil {
 		a.logger.Printf("failed to sync profile configs: %v", err)
 	}
+	syncCtx, syncCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := a.syncNDMSProfiles(syncCtx, next.Tunnels); err != nil {
+		a.logger.Printf("failed to sync NDMS profiles after refresh: %v", err)
+	}
+	syncCancel()
 	a.logger.Printf("subscription refresh merged tunnels=%d source=%s", len(next.Tunnels), subscriptionOrigin(current.Subscription.URL))
 
 	return next, nil
@@ -503,16 +534,18 @@ func (a *App) ActivateTunnel(ctx context.Context, tunnelID string) (state.AppSta
 		return state.AppState{}, err
 	}
 
-	// Register interface with Keenetic NDMS BEFORE starting Hysteria.
-	// Keenetic's opkg-tun module creates the underlying tun device;
+	// Register ALL tunnels with Keenetic NDMS BEFORE starting Hysteria so
+	// they remain visible in Keenetic settings (like awg-manager). Keenetic's
+	// opkg-tun module creates the underlying tun device on registration;
 	// Hysteria then attaches to the existing device instead of creating one.
-	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.syncTunnelToNDMS(ndmsCtx, *selected, true); err != nil {
-		a.logger.Printf("failed to register NDMS tunnel for %s: %v", selected.InterfaceName, err)
-	} else if err := a.pruneNDMSTunnels(ndmsCtx, current.Tunnels, selected.InterfaceName); err != nil {
-		a.logger.Printf("failed to prune inactive NDMS tunnels: %v", err)
-	} else if err := a.rci.Save(ndmsCtx); err != nil {
-		a.logger.Printf("failed to save NDMS config: %v", err)
+	preTunnels := make([]state.TunnelProfile, len(current.Tunnels))
+	copy(preTunnels, current.Tunnels)
+	for i := range preTunnels {
+		preTunnels[i].Active = preTunnels[i].ID == tunnelID
+	}
+	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := a.syncNDMSProfiles(ndmsCtx, preTunnels); err != nil {
+		a.logger.Printf("failed to register NDMS tunnels before activating %s: %v", selected.InterfaceName, err)
 	}
 	ndmsCancel()
 
@@ -634,13 +667,11 @@ func (a *App) DeactivateTunnel(reason string) (state.AppState, error) {
 		return state.AppState{}, err
 	}
 	a.logger.Printf("deactivate succeeded reason=%s", reason)
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := a.pruneNDMSTunnels(cleanupCtx, next.Tunnels, ""); err != nil {
-		a.logger.Printf("failed to prune NDMS tunnels on deactivate: %v", err)
-	} else if err := a.rci.Save(cleanupCtx); err != nil {
-		a.logger.Printf("failed to save NDMS cleanup on deactivate: %v", err)
+	ndmsCtx, ndmsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := a.syncNDMSProfiles(ndmsCtx, next.Tunnels); err != nil {
+		a.logger.Printf("failed to sync NDMS profiles on deactivate: %v", err)
 	}
-	cleanupCancel()
+	ndmsCancel()
 	if routeErr != nil {
 		return next, routeErr
 	}
@@ -690,23 +721,13 @@ func (a *App) cleanupNDMSOnBoot() {
 	time.Sleep(2 * time.Second)
 
 	snapshot := a.store.Snapshot()
-	keepInterface := ""
-	for _, tunnel := range snapshot.Tunnels {
-		if tunnel.ID == snapshot.Runtime.ActiveTunnelID {
-			keepInterface = tunnel.InterfaceName
-			break
-		}
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := a.pruneNDMSTunnels(ctx, snapshot.Tunnels, keepInterface); err != nil {
-		a.logger.Printf("failed to cleanup NDMS tunnels on boot: %v", err)
+	if err := a.syncNDMSProfiles(ctx, snapshot.Tunnels); err != nil {
+		a.logger.Printf("failed to sync NDMS profiles on boot: %v", err)
 		return
-	}
-	if err := a.rci.Save(ctx); err != nil {
-		a.logger.Printf("failed to save NDMS cleanup on boot: %v", err)
 	}
 }
 
@@ -732,6 +753,66 @@ func (a *App) handleUnexpectedRuntimeExit(err error) {
 	if updateErr != nil {
 		a.logger.Printf("failed to persist runtime exit state: %v", updateErr)
 	}
+}
+
+func (a *App) handleIfaceChanged(w http.ResponseWriter, r *http.Request) {
+	systemName := r.URL.Query().Get("system_name")
+	layer := r.URL.Query().Get("layer")
+	level := r.URL.Query().Get("level")
+
+	a.logger.Printf("ndm hook: system_name=%s layer=%s level=%s", systemName, layer, level)
+
+	if layer != "conf" || systemName == "" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	snapshot := a.store.Snapshot()
+	var target *state.TunnelProfile
+	for i := range snapshot.Tunnels {
+		if keenetic.RouterInterfaceName(snapshot.Tunnels[i].InterfaceName) == systemName {
+			target = &snapshot.Tunnels[i]
+			break
+		}
+	}
+	if target == nil {
+		a.logger.Printf("ndm hook: no tunnel matches system_name=%s", systemName)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	switch level {
+	case "up":
+		if snapshot.Runtime.ActiveTunnelID == target.ID {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		a.logger.Printf("ndm hook: activating tunnel id=%s name=%s via Keenetic UI", target.ID, target.Name)
+		if _, err := a.ActivateTunnel(ctx, target.ID); err != nil {
+			a.logger.Printf("ndm hook: activate failed id=%s err=%v", target.ID, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	case "down":
+		if snapshot.Runtime.ActiveTunnelID != target.ID {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		a.logger.Printf("ndm hook: deactivating tunnel id=%s name=%s via Keenetic UI", target.ID, target.Name)
+		if _, err := a.DeactivateTunnel("keenetic ui"); err != nil {
+			a.logger.Printf("ndm hook: deactivate failed id=%s err=%v", target.ID, err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	default:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 func (a *App) ensureFilesystem() error {

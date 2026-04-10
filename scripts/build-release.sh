@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
-VERSION="${VERSION:-0.1.11}"
+VERSION="${VERSION:-0.3.0}"
 GO_BIN="${GO_BIN:-go}"
 HYSTERIA_BIN_DIR="${HYSTERIA_BIN_DIR:-${DIST_DIR}/hysteria-client}"
 
@@ -27,6 +27,7 @@ build_manager() {
   mkdir -p "${data_dir}/opt/bin" \
            "${data_dir}/opt/etc/init.d" \
            "${data_dir}/opt/etc/hysteria-manager/profiles" \
+           "${data_dir}/opt/etc/ndm/iflayerchanged.d" \
            "${data_dir}/opt/var/log/hysteria-manager" \
            "${control_dir}"
 
@@ -40,6 +41,8 @@ build_manager() {
   chmod +x "${data_dir}/opt/bin/hysteria-manager"
   cp "${ROOT_DIR}/packaging/init.d/S99hysteria-manager" "${data_dir}/opt/etc/init.d/S99hysteria-manager"
   chmod +x "${data_dir}/opt/etc/init.d/S99hysteria-manager"
+  cp "${ROOT_DIR}/packaging/ndm/iflayerchanged.d/50-hysteria-manager.sh" "${data_dir}/opt/etc/ndm/iflayerchanged.d/50-hysteria-manager.sh"
+  chmod +x "${data_dir}/opt/etc/ndm/iflayerchanged.d/50-hysteria-manager.sh"
   cp "${ROOT_DIR}/packaging/control/postinst" "${control_dir}/postinst"
   cp "${ROOT_DIR}/packaging/control/prerm" "${control_dir}/prerm"
   chmod +x "${control_dir}/postinst" "${control_dir}/prerm"

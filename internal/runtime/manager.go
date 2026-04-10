@@ -90,17 +90,33 @@ func (m *Manager) Activate(_ context.Context, profile Profile) (state.RuntimeSta
 		close(handle.done)
 	}()
 
-	select {
-	case <-handle.done:
-		m.logger.Printf("hysteria process exited during startup: %v", handle.waitErr)
-		return state.RuntimeStatus{}, fmt.Errorf("hysteria exited during startup: %w", handle.waitErr)
-	case <-time.After(2 * time.Second):
-	}
+	deadline := time.After(15 * time.Second)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
 
-	actualInterface := detectOpkgTunInterface(m.logPath, knownInterfaces)
-	if actualInterface == "" {
-		actualInterface = profile.InterfaceName
+	var actualInterface string
+	for actualInterface == "" {
+		select {
+		case <-handle.done:
+			m.logger.Printf("hysteria process exited during startup: %v", handle.waitErr)
+			return state.RuntimeStatus{}, fmt.Errorf("hysteria exited during startup: %w", handle.waitErr)
+		case <-deadline:
+			m.logger.Printf("hysteria startup timed out waiting for interface")
+			_ = cmd.Process.Kill()
+			<-handle.done
+			return state.RuntimeStatus{}, fmt.Errorf("hysteria startup timed out: interface not ready after 15s")
+		case <-ticker.C:
+			iface := detectOpkgTunInterface(m.logPath, knownInterfaces)
+			if iface == "" {
+				continue
+			}
+			if _, err := net.InterfaceByName(iface); err != nil {
+				continue
+			}
+			actualInterface = iface
+		}
 	}
+	ticker.Stop()
 	handle.interfaceName = actualInterface
 
 	m.mu.Lock()

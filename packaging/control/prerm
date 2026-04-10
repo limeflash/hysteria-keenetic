@@ -2,3 +2,4 @@
 set -e
 
 /opt/etc/init.d/S99hysteria-manager stop || true
+rm -f /opt/etc/ndm/iflayerchanged.d/50-hysteria-manager.sh 2>/dev/null || true

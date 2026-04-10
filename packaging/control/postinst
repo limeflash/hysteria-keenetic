@@ -4,4 +4,5 @@ set -e
 mkdir -p /opt/etc/hysteria-manager/profiles
 mkdir -p /opt/var/log/hysteria-manager
 chmod +x /opt/etc/init.d/S99hysteria-manager || true
+chmod +x /opt/etc/ndm/iflayerchanged.d/50-hysteria-manager.sh 2>/dev/null || true
 /opt/etc/init.d/S99hysteria-manager restart || true
